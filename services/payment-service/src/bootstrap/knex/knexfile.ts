@@ -1,4 +1,5 @@
 import { Knex } from 'knex';
+import path from 'path';
 
 const connection = process.env.DATABASE_URL;
 
@@ -7,7 +8,7 @@ const config: Record<string, Knex.Config> = {
     client: 'pg',
     connection,
     migrations: {
-      directory: './migrations',
+      directory: path.join(__dirname, 'migrations'),
       extension: 'ts',
     },
   },
@@ -15,7 +16,7 @@ const config: Record<string, Knex.Config> = {
     client: 'pg',
     connection,
     migrations: {
-      directory: './migrations',
+      directory: path.join(__dirname, 'migrations'),
       extension: 'js',
     },
   },
