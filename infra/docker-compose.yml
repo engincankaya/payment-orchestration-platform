@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: paybridge
+      POSTGRES_PASSWORD: paybridge
+      POSTGRES_DB: paybridge
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  api-gateway:
+    build:
+      context: ../services/api-gateway
+    environment:
+      SERVICE_NAME: api-gateway
+      PORT: 8080
+      REDIS_URL: redis://redis:6379
+      PAYMENT_SERVICE_BASE_URL: http://payment-service:8080
+      LEDGER_SERVICE_BASE_URL: http://ledger-service:8080
+      WEBHOOK_SERVICE_BASE_URL: http://webhook-service:8080
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      PUBLIC_API_KEY: local-public-api-key
+    ports:
+      - "8080:8080"
+    depends_on:
+      - redis
+      - payment-service
+      - ledger-service
+      - webhook-service
+
+  payment-service:
+    build:
+      context: ../services/payment-service
+    environment:
+      SERVICE_NAME: payment-service
+      PORT: 8080
+      DATABASE_URL: postgres://paybridge:paybridge@postgres:5432/payment_db
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      MOCK_PROVIDER_NAME: mock-provider
+    depends_on:
+      - postgres
+      - rabbitmq
+
+  ledger-service:
+    build:
+      context: ../services/ledger-service
+    environment:
+      SERVICE_NAME: ledger-service
+      PORT: 8080
+      DATABASE_URL: postgres://paybridge:paybridge@postgres:5432/ledger_db
+      RABBITMQ_URL: amqp://rabbitmq:5672
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+    depends_on:
+      - postgres
+      - rabbitmq
+
+  webhook-service:
+    build:
+      context: ../services/webhook-service
+    environment:
+      SERVICE_NAME: webhook-service
+      PORT: 8080
+      DATABASE_URL: postgres://paybridge:paybridge@postgres:5432/webhook_db
+      PAYMENT_SERVICE_BASE_URL: http://payment-service:8080
+      INTERNAL_SERVICE_TOKEN: local-internal-token
+      MOCK_PROVIDER_WEBHOOK_SECRET: local-webhook-secret
+    depends_on:
+      - postgres
+      - payment-service
