@@ -70,7 +70,7 @@ export function convertJoiDescription(description: JoiDescription): Record<strin
   return {
     type: 'string',
     ...(validValues.length > 0 ? { enum: validValues } : {}),
-    ...(hasRule(description, 'uuid') ? { format: 'uuid' } : {}),
+    ...(hasRule(description, 'guid') || hasRule(description, 'uuid') ? { format: 'uuid' } : {}),
   };
 }
 

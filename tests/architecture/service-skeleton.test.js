@@ -66,6 +66,16 @@ test('http services default to production-like container port 8080', () => {
   }
 });
 
+test('service Docker builds install dependencies from the committed lockfile', () => {
+  for (const serviceName of expectedServices) {
+    const dockerfileSource = readFile(`services/${serviceName}/Dockerfile`);
+
+    assert.match(dockerfileSource, /COPY package-lock\.json \.\//);
+    assert.match(dockerfileSource, /RUN npm ci\b/);
+    assert.doesNotMatch(dockerfileSource, /RUN npm install\b/);
+  }
+});
+
 test('docker compose defines infrastructure and all four services', () => {
   const composeSource = readFile('infra/docker-compose.yml');
 

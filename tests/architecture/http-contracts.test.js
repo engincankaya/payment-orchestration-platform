@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const Joi = require('joi');
 
 const rootDir = path.resolve(__dirname, '..', '..');
 const serviceNames = [
@@ -17,6 +19,19 @@ function exists(relativePath) {
 
 function read(relativePath) {
   return fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
+}
+
+function buildOpenApiKit() {
+  const result = spawnSync(
+    'npm',
+    ['run', 'build', '--workspace', '@payment-orchestration-platform/openapi-kit'],
+    {
+      cwd: rootDir,
+      encoding: 'utf8',
+    },
+  );
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
 test('OpenAPI utilities live in a single internal workspace package', () => {
@@ -46,18 +61,112 @@ test('route settings support response contract metadata in openapi-kit', () => {
   assert.match(routeSettings, /RouteRequestValidation/);
 });
 
-test('OpenAPI generator maps route metadata, path params, headers and request body', () => {
-  const generator = read('packages/openapi-kit/src/generate-openapi-paths.ts');
+test('OpenAPI generator converts route metadata and Joi schemas into a usable contract', () => {
+  buildOpenApiKit();
 
-  assert.match(generator, /replace\(/);
-  assert.match(generator, /parameters/);
-  assert.match(generator, /header/);
-  assert.match(generator, /path/);
-  assert.match(generator, /query/);
-  assert.match(generator, /requestBody/);
-  assert.match(generator, /responses/);
-  assert.match(generator, /config\.description/);
-  assert.match(generator, /config\.tags/);
+  const { generateOpenApiDocument } = require(path.join(
+    rootDir,
+    'packages/openapi-kit/dist',
+  ));
+  const document = generateOpenApiDocument({
+    title: 'Contract Test API',
+    version: '1.0.0',
+    routes: [
+      {
+        path: '/internal/payments/:paymentId',
+        method: 'post',
+        controller: 'paymentsController.create',
+        config: {
+          tags: ['payments'],
+          description: 'Create payment contract',
+          middlewares: ['internalAuthMiddleware'],
+          validation: {
+            params: Joi.object({
+              paymentId: Joi.string().uuid().required(),
+            }),
+            query: Joi.object({
+              expand: Joi.string().valid('provider', 'ledger').optional(),
+            }),
+            headers: Joi.object({
+              'idempotency-key': Joi.string().min(8).required(),
+              'x-correlation-id': Joi.string().uuid().optional(),
+            }).unknown(true),
+            body: Joi.object({
+              merchantId: Joi.string().uuid().required(),
+              amountMinor: Joi.number().integer().positive().required(),
+              currency: Joi.string().valid('TRY', 'USD', 'EUR').required(),
+            }),
+          },
+          responses: {
+            201: {
+              description: 'Payment created',
+              schema: {
+                type: 'object',
+                required: ['id'],
+                properties: {
+                  id: { type: 'string', format: 'uuid' },
+                },
+              },
+            },
+          },
+        },
+      },
+    ],
+  });
+
+  const operation = document.paths['/internal/payments/{paymentId}'].post;
+
+  assert.equal(operation.description, 'Create payment contract');
+  assert.deepEqual(operation.tags, ['payments']);
+  assert.deepEqual(operation.parameters, [
+    {
+      name: 'paymentId',
+      in: 'path',
+      required: true,
+      schema: { type: 'string', format: 'uuid' },
+    },
+    {
+      name: 'expand',
+      in: 'query',
+      required: false,
+      schema: { type: 'string', enum: ['provider', 'ledger'] },
+    },
+    {
+      name: 'idempotency-key',
+      in: 'header',
+      required: true,
+      schema: { type: 'string' },
+    },
+    {
+      name: 'x-correlation-id',
+      in: 'header',
+      required: false,
+      schema: { type: 'string', format: 'uuid' },
+    },
+  ]);
+  assert.deepEqual(operation.requestBody.content['application/json'].schema, {
+    type: 'object',
+    properties: {
+      merchantId: { type: 'string', format: 'uuid' },
+      amountMinor: { type: 'integer' },
+      currency: { type: 'string', enum: ['TRY', 'USD', 'EUR'] },
+    },
+    required: ['merchantId', 'amountMinor', 'currency'],
+  });
+  assert.deepEqual(operation.responses['201'], {
+    description: 'Payment created',
+    content: {
+      'application/json': {
+        schema: {
+          type: 'object',
+          required: ['id'],
+          properties: {
+            id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+  });
 });
 
 test('server applications expose OpenAPI docs through setupOpenApi', () => {

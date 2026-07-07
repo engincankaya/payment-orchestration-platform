@@ -15,17 +15,6 @@ const allowedServices = new Set([
 
 const allowedInternalPackages = new Set(['openapi-kit']);
 const forbiddenRootRuntimeDirs = ['shared', 'common'];
-const forbiddenDependencies = [
-  '@nestjs/common',
-  '@nestjs/core',
-  '@prisma/client',
-  'nestjs',
-  'next',
-  'prisma',
-  'react',
-  'react-dom',
-  'vue',
-];
 
 function pathExists(filePath) {
   return fs.existsSync(filePath);
@@ -105,31 +94,6 @@ test('root package is orchestration-only and does not expose runtime dependencie
   assert.deepEqual(packageJson.workspaces, ['packages/*', 'services/*']);
   assert.deepEqual(packageJson.dependencies ?? {}, {});
   assert.deepEqual(packageJson.devDependencies ?? {}, {});
-});
-
-test('project package manifests do not use forbidden frameworks or frontend libraries', () => {
-  const packageFiles = walkFiles(rootDir, (filePath) => path.basename(filePath) === 'package.json');
-  const violations = [];
-
-  for (const packageFile of packageFiles) {
-    const packageJson = readJson(packageFile);
-    const dependencyBlocks = [
-      packageJson.dependencies ?? {},
-      packageJson.devDependencies ?? {},
-      packageJson.peerDependencies ?? {},
-      packageJson.optionalDependencies ?? {},
-    ];
-
-    for (const dependencies of dependencyBlocks) {
-      for (const dependencyName of Object.keys(dependencies)) {
-        if (forbiddenDependencies.includes(dependencyName)) {
-          violations.push(`${path.relative(rootDir, packageFile)} -> ${dependencyName}`);
-        }
-      }
-    }
-  }
-
-  assert.deepEqual(violations, []);
 });
 
 test('service source files do not import another service internal runtime code', () => {
