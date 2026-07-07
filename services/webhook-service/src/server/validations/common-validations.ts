@@ -1,8 +1,8 @@
 import { NextFunction, Request, Response } from 'express';
 import Joi from 'joi';
+import { RouteRequestValidation } from '@payment-orchestration-platform/openapi-kit';
 
 import { CORRELATION_ID_HEADER } from '../../constants';
-import { RouteRequestValidation } from '../../types/server/route-validation';
 
 type RequestSegment = 'body' | 'params' | 'query' | 'headers';
 

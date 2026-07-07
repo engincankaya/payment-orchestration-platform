@@ -1,9 +1,43 @@
 import Joi from 'joi';
+import { IRouteSettings } from '@payment-orchestration-platform/openapi-kit';
 
 import { BASE_INTERNAL_API_PATH } from '../../../constants';
-import { IRouteSettings } from '../../../types/server/route-settings';
 
 const BASE_ROUTE = `${BASE_INTERNAL_API_PATH}/payments`;
+
+const paymentSchema = {
+  type: 'object',
+  required: ['id', 'merchantId', 'amountMinor', 'currency', 'status', 'provider', 'createdAt'],
+  properties: {
+    id: { type: 'string', format: 'uuid' },
+    merchantId: { type: 'string', format: 'uuid' },
+    amountMinor: { type: 'integer' },
+    currency: { type: 'string', enum: ['TRY', 'USD', 'EUR'] },
+    status: { type: 'string', enum: ['AUTHORIZED', 'FAILED'] },
+    provider: { type: 'string' },
+    providerPaymentId: { type: 'string', nullable: true },
+    failureCode: { type: 'string', nullable: true },
+    failureMessage: { type: 'string', nullable: true },
+    createdAt: { type: 'string', format: 'date-time' },
+  },
+};
+
+const errorSchema = {
+  type: 'object',
+  required: ['error'],
+  properties: {
+    error: {
+      type: 'object',
+      required: ['code', 'message', 'correlationId'],
+      properties: {
+        code: { type: 'string' },
+        message: { type: 'string' },
+        details: { nullable: true },
+        correlationId: { type: 'string', nullable: true },
+      },
+    },
+  },
+};
 
 export const PaymentRoutes: IRouteSettings[] = [
   {
@@ -26,6 +60,20 @@ export const PaymentRoutes: IRouteSettings[] = [
           currency: Joi.string().valid('TRY', 'USD', 'EUR').required(),
         }),
       },
+      responses: {
+        201: {
+          description: 'Payment created and authorization attempted',
+          schema: paymentSchema,
+        },
+        400: {
+          description: 'VALIDATION_ERROR',
+          schema: errorSchema,
+        },
+        401: {
+          description: 'UNAUTHORIZED',
+          schema: errorSchema,
+        },
+      },
     },
   },
   {
@@ -44,6 +92,24 @@ export const PaymentRoutes: IRouteSettings[] = [
         params: Joi.object({
           paymentId: Joi.string().uuid().required(),
         }),
+      },
+      responses: {
+        200: {
+          description: 'Payment details',
+          schema: paymentSchema,
+        },
+        400: {
+          description: 'VALIDATION_ERROR',
+          schema: errorSchema,
+        },
+        401: {
+          description: 'UNAUTHORIZED',
+          schema: errorSchema,
+        },
+        404: {
+          description: 'PAYMENT_NOT_FOUND',
+          schema: errorSchema,
+        },
       },
     },
   },

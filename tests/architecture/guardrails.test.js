@@ -13,7 +13,8 @@ const allowedServices = new Set([
   'webhook-service',
 ]);
 
-const forbiddenRootRuntimeDirs = ['packages', 'shared', 'common'];
+const allowedInternalPackages = new Set(['openapi-kit']);
+const forbiddenRootRuntimeDirs = ['shared', 'common'];
 const forbiddenDependencies = [
   '@nestjs/common',
   '@nestjs/core',
@@ -73,12 +74,19 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
-test('root does not contain shared runtime package directories', () => {
+test('root does not contain unapproved shared runtime package directories', () => {
   const existingForbiddenDirs = forbiddenRootRuntimeDirs.filter((directoryName) =>
     pathExists(path.join(rootDir, directoryName)),
   );
 
   assert.deepEqual(existingForbiddenDirs, []);
+
+  const packageNames = listDirectories(path.join(rootDir, 'packages'));
+  const unexpectedPackages = packageNames.filter(
+    (packageName) => !allowedInternalPackages.has(packageName),
+  );
+
+  assert.deepEqual(unexpectedPackages, []);
 });
 
 test('services directory contains only the approved service boundaries when present', () => {
@@ -94,7 +102,7 @@ test('root package is orchestration-only and does not expose runtime dependencie
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.main, undefined);
   assert.equal(packageJson.exports, undefined);
-  assert.equal(packageJson.workspaces, undefined);
+  assert.deepEqual(packageJson.workspaces, ['packages/*', 'services/*']);
   assert.deepEqual(packageJson.dependencies ?? {}, {});
   assert.deepEqual(packageJson.devDependencies ?? {}, {});
 });

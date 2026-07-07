@@ -23,7 +23,8 @@ services:
 
   api-gateway:
     build:
-      context: ../services/api-gateway
+      context: ..
+      dockerfile: services/api-gateway/Dockerfile
     environment:
       SERVICE_NAME: api-gateway
       PORT: 8080
@@ -43,7 +44,8 @@ services:
 
   payment-service:
     build:
-      context: ../services/payment-service
+      context: ..
+      dockerfile: services/payment-service/Dockerfile
     environment:
       SERVICE_NAME: payment-service
       PORT: 8080
@@ -57,7 +59,8 @@ services:
 
   ledger-service:
     build:
-      context: ../services/ledger-service
+      context: ..
+      dockerfile: services/ledger-service/Dockerfile
     environment:
       SERVICE_NAME: ledger-service
       PORT: 8080
@@ -70,7 +73,8 @@ services:
 
   webhook-service:
     build:
-      context: ../services/webhook-service
+      context: ..
+      dockerfile: services/webhook-service/Dockerfile
     environment:
       SERVICE_NAME: webhook-service
       PORT: 8080

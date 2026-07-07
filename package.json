@@ -2,6 +2,10 @@
   "name": "payment-orchestration-platform",
   "private": true,
   "description": "Root orchestration scripts for the payment orchestration platform.",
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ],
   "scripts": {
     "test:architecture": "node --test tests/architecture/*.test.js",
     "test": "npm run test:architecture"

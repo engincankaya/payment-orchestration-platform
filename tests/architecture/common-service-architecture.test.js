@@ -24,8 +24,6 @@ const commonArchitectureFiles = [
   'src/server/middlewares/error-middleware.ts',
   'src/server/validations/common-validations.ts',
   'src/types/errors/api-error.ts',
-  'src/types/server/route-settings.ts',
-  'src/types/server/route-validation.ts',
   'src/utils/logger.ts',
 ];
 
@@ -50,7 +48,15 @@ test('each service owns a local copy of the common service architecture files', 
 });
 
 test('each service package includes the common architecture runtime dependencies', () => {
-  const requiredDependencies = ['awilix', 'cors', 'express', 'joi', 'knex', 'pg'];
+  const requiredDependencies = [
+    '@payment-orchestration-platform/openapi-kit',
+    'awilix',
+    'cors',
+    'express',
+    'joi',
+    'knex',
+    'pg',
+  ];
 
   for (const serviceName of serviceNames) {
     const packageJson = JSON.parse(readServiceFile(serviceName, 'package.json'));

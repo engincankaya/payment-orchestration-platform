@@ -1,8 +1,10 @@
 import { AwilixContainer } from 'awilix';
 import cors from 'cors';
 import express, { Application, ErrorRequestHandler, RequestHandler } from 'express';
+import { setupOpenApi } from '@payment-orchestration-platform/openapi-kit';
 
 import initCustomRoutes from './init-custom-routes';
+import { Routes } from './routes';
 
 export default class ServerApplication {
   public app: Application;
@@ -49,6 +51,10 @@ export default class ServerApplication {
   }
 
   private setupSwagger() {
-    // Route metadata stays compatible with future OpenAPI generation.
+    setupOpenApi(this.app, {
+      docsPath: '/internal-docs',
+      title: `${process.env.SERVICE_NAME ?? 'webhook-service'} Internal API`,
+      routes: Routes,
+    });
   }
 }
