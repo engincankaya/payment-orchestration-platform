@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Build & Architecture Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build all workspaces
+        run: npm run build --workspaces
+
+      - name: Run architecture tests
+        run: npm test
+
+  docker:
+    name: Docker Build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, payment-service, ledger-service, webhook-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build service image
+        run: docker build -f services/${{ matrix.service }}/Dockerfile -t ${{ matrix.service }}:ci .
