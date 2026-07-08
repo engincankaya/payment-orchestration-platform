@@ -26,6 +26,9 @@ jobs:
       - name: Run architecture tests
         run: npm test
 
+      - name: Run integration tests
+        run: npm run test:integration
+
   docker:
     name: Docker Build (${{ matrix.service }})
     runs-on: ubuntu-latest
