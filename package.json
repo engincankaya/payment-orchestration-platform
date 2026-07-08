@@ -9,7 +9,8 @@
   "scripts": {
     "test:architecture": "node --test tests/architecture/*.test.js",
     "typecheck:tests": "tsc -p services/api-gateway/tsconfig.test.json --noEmit && tsc -p services/payment-service/tsconfig.test.json --noEmit",
-    "test:unit": "jest",
+    "test:unit": "jest --selectProjects api-gateway payment-service",
+    "test:integration": "jest --selectProjects payment-service-integration --runInBand",
     "test": "npm run test:architecture && npm run typecheck:tests && npm run test:unit"
   },
   "devDependencies": {

@@ -1,8 +1,8 @@
 module.exports = {
-  displayName: 'payment-service',
+  displayName: 'payment-service-integration',
   rootDir: __dirname,
   testEnvironment: 'node',
-  testMatch: ['<rootDir>/tests/unit/**/*.test.ts'],
+  testMatch: ['<rootDir>/tests/integration/**/*.test.ts'],
   transform: {
     '^.+\\.ts$': ['@swc/jest'],
   },
