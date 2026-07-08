@@ -41,6 +41,7 @@ container.loadModules(['../server/middlewares/**/*.{ts,js}'], {
   resolverOptions: { lifetime: Lifetime.SINGLETON },
 });
 
+// Controllers are scoped so request-level dependencies can be introduced later without changing wiring.
 container.loadModules(['../server/controllers/**/*.{ts,js}'], {
   cwd: __dirname,
   formatName: 'camelCase',

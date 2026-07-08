@@ -80,6 +80,10 @@ export const PaymentRoutes: IRouteSettings[] = [
           description: 'UNAUTHORIZED',
           schema: errorSchema,
         },
+        409: {
+          description: 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST or IDEMPOTENCY_REQUEST_IN_PROGRESS',
+          schema: errorSchema,
+        },
       },
     },
   },

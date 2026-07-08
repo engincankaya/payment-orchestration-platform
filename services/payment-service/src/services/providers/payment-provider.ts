@@ -27,6 +27,7 @@ export interface CapturePaymentResult {
   failureMessage?: string;
 }
 
+// External gateways are adapted to this contract before they are used by payment orchestration.
 export interface PaymentAuthorizer {
   authorize(input: AuthorizePaymentInput): Promise<AuthorizePaymentResult>;
 }

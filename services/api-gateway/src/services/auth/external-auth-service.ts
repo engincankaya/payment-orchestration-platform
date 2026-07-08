@@ -7,6 +7,7 @@ export default class ExternalAuthService {
     this.apiKeyAuthProvider = deps.apiKeyAuthProvider;
   }
 
+  // Keep public authentication behind a service boundary so stronger auth can replace API keys later.
   public authenticateApiKey = async (apiKey?: string): Promise<AuthenticatedClient | null> => {
     return this.apiKeyAuthProvider.authenticate(apiKey);
   };
