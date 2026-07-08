@@ -12,6 +12,7 @@ export interface SetupOpenApiOptions {
 }
 
 export function setupOpenApi(app: Application, options: SetupOpenApiOptions) {
+  // Routes are passed in by each service so this package stays infrastructure-only.
   const document = generateOpenApiDocument({
     title: options.title,
     version: options.version ?? '1.0.0',

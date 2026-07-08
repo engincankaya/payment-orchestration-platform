@@ -8,6 +8,15 @@
   ],
   "scripts": {
     "test:architecture": "node --test tests/architecture/*.test.js",
-    "test": "npm run test:architecture"
+    "typecheck:tests": "tsc -p services/api-gateway/tsconfig.test.json --noEmit && tsc -p services/payment-service/tsconfig.test.json --noEmit",
+    "test:unit": "jest --selectProjects api-gateway payment-service",
+    "test:integration": "jest --selectProjects payment-service-integration --runInBand",
+    "test": "npm run test:architecture && npm run typecheck:tests && npm run test:unit"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.7.26",
+    "@swc/jest": "^0.2.36",
+    "@types/jest": "^29.5.12",
+    "jest": "^29.7.0"
   }
 }

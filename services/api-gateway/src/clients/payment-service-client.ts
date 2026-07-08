@@ -1,6 +1,8 @@
 import { CORRELATION_ID_HEADER } from '../constants';
 import ApiError from '../types/errors/api-error';
 
+export type FetchFn = typeof fetch;
+
 export interface CreatePaymentClientCommand {
   correlationId: string;
   idempotencyKey: string;
@@ -17,10 +19,12 @@ export interface GetPaymentClientQuery {
 export default class PaymentServiceClient {
   private baseUrl: string;
   private internalToken: string;
+  private fetchFn: FetchFn;
 
-  constructor(deps: { env: NodeJS.ProcessEnv }) {
+  constructor(deps: { env: NodeJS.ProcessEnv; fetchFn?: FetchFn }) {
     this.baseUrl = deps.env.PAYMENT_SERVICE_BASE_URL ?? 'http://payment-service:8080';
     this.internalToken = deps.env.INTERNAL_SERVICE_TOKEN ?? '';
+    this.fetchFn = deps.fetchFn ?? globalThis.fetch.bind(globalThis);
   }
 
   public create = async (command: CreatePaymentClientCommand) => {
@@ -62,7 +66,7 @@ export default class PaymentServiceClient {
       headers['idempotency-key'] = options.idempotencyKey;
     }
 
-    const response = await fetch(`${this.baseUrl}${path}`, {
+    const response = await this.fetchFn(`${this.baseUrl}${path}`, {
       method: options.method,
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,

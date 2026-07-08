@@ -76,11 +76,15 @@ test('containers use Awilix proxy injection and enforce required lifetimes', () 
     const containerSource = readServiceFile(serviceName, 'src/bootstrap/container.ts');
 
     assert.match(containerSource, /InjectionMode\.PROXY/);
+    assert.match(containerSource, /export function buildContainer/);
+    assert.match(containerSource, /overrides:\s*NameAndRegistrationPair<unknown>\s*=\s*\{\}/);
     assert.match(containerSource, /server:\s*asClass\(ServerApplication\)\.singleton\(\)/);
     assert.match(containerSource, /knex:\s*asValue\(knex\)/);
     assert.match(containerSource, /env:\s*asValue\(process\.env\)/);
     assert.match(containerSource, /resolverOptions:\s*\{\s*lifetime:\s*Lifetime\.SINGLETON\s*\}/);
     assert.match(containerSource, /resolverOptions:\s*\{\s*lifetime:\s*Lifetime\.SCOPED\s*\}/);
+    assert.match(containerSource, /container\.register\(overrides\)/);
+    assert.match(containerSource, /export default buildContainer\(\)/);
   }
 });
 

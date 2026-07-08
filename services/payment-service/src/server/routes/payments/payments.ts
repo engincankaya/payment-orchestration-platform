@@ -5,6 +5,7 @@ import { BASE_INTERNAL_API_PATH } from '../../../constants';
 
 const BASE_ROUTE = `${BASE_INTERNAL_API_PATH}/payments`;
 
+// Response schemas live with route metadata because the OpenAPI document is generated from this source.
 const paymentSchema = {
   type: 'object',
   required: ['id', 'merchantId', 'amountMinor', 'currency', 'status', 'provider', 'createdAt'],
@@ -71,6 +72,10 @@ export const PaymentRoutes: IRouteSettings[] = [
         },
         401: {
           description: 'UNAUTHORIZED',
+          schema: errorSchema,
+        },
+        409: {
+          description: 'IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST or IDEMPOTENCY_REQUEST_IN_PROGRESS',
           schema: errorSchema,
         },
       },

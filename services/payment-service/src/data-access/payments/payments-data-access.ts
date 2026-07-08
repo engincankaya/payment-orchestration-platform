@@ -46,4 +46,8 @@ export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
   public findById = async (id: string, trx?: Knex.Transaction) => {
     return this.query(trx).where({ id }).first();
   };
+
+  public withTransaction = async <T>(handler: (trx: Knex.Transaction) => Promise<T>) => {
+    return this.knex.transaction(handler);
+  };
 }

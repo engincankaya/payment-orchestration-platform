@@ -2,7 +2,18 @@ import { randomUUID } from 'crypto';
 
 import PaymentsDataAccess, { PaymentRecord } from '../../data-access/payments/payments-data-access';
 import ApiError from '../../types/errors/api-error';
+import IdempotencyService from '../idempotency/idempotency-service';
 import ProviderRegistryService from '../providers/provider-registry-service';
+
+export type PaymentsDataAccessPort = Pick<
+  PaymentsDataAccess,
+  'insert' | 'findById' | 'withTransaction'
+>;
+export type IdempotencyServicePort = Pick<
+  IdempotencyService,
+  'buildRequestHash' | 'getExistingOrStart' | 'markCompleted' | 'markFailed'
+>;
+export type ProviderRegistryServicePort = Pick<ProviderRegistryService, 'getDefaultProvider'>;
 
 export const PaymentStatus = {
   AUTHORIZED: 'AUTHORIZED',
@@ -37,44 +48,84 @@ export interface PaymentDto {
 }
 
 export default class PaymentsService {
-  private paymentsDataAccess: PaymentsDataAccess;
-  private providerRegistryService: ProviderRegistryService;
+  private paymentsDataAccess: PaymentsDataAccessPort;
+  private idempotencyService: IdempotencyServicePort;
+  private providerRegistryService: ProviderRegistryServicePort;
 
   constructor(deps: {
-    paymentsDataAccess: PaymentsDataAccess;
-    providerRegistryService: ProviderRegistryService;
+    paymentsDataAccess: PaymentsDataAccessPort;
+    idempotencyService: IdempotencyServicePort;
+    providerRegistryService: ProviderRegistryServicePort;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
+    this.idempotencyService = deps.idempotencyService;
     this.providerRegistryService = deps.providerRegistryService;
   }
 
   public create = async (command: CreatePaymentCommand): Promise<PaymentDto> => {
-    const paymentId = randomUUID();
-    const provider = this.providerRegistryService.getDefaultProvider();
-    const authorization = await provider.authorize({
-      paymentId,
+    const requestHash = this.idempotencyService.buildRequestHash({
       merchantId: command.merchantId,
       amountMinor: command.amountMinor,
       currency: command.currency,
     });
-
-    const now = new Date();
-    const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
-    const payment = await this.paymentsDataAccess.insert({
-      id: paymentId,
-      merchant_id: command.merchantId,
-      amount_minor: command.amountMinor,
-      currency: command.currency,
-      status,
-      provider: authorization.provider,
-      provider_payment_id: authorization.providerPaymentId ?? null,
-      failure_code: authorization.failureCode ?? null,
-      failure_message: authorization.failureMessage ?? null,
-      authorized_at: authorization.success ? now : null,
-      failed_at: authorization.success ? null : now,
+    const idempotencyDecision = await this.idempotencyService.getExistingOrStart({
+      scope: `payments:create:${command.merchantId}`,
+      idempotencyKey: command.idempotencyKey,
+      requestHash,
     });
 
-    return this.toDto(payment);
+    if (idempotencyDecision.type === 'COMPLETED') {
+      return idempotencyDecision.responseBody as PaymentDto;
+    }
+
+    const paymentId = randomUUID();
+
+    try {
+      const provider = this.providerRegistryService.getDefaultProvider();
+      const authorization = await provider.authorize({
+        paymentId,
+        merchantId: command.merchantId,
+        amountMinor: command.amountMinor,
+        currency: command.currency,
+      });
+
+      const now = new Date();
+      const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
+
+      return await this.paymentsDataAccess.withTransaction(async (trx) => {
+        const payment = await this.paymentsDataAccess.insert({
+          id: paymentId,
+          merchant_id: command.merchantId,
+          amount_minor: command.amountMinor,
+          currency: command.currency,
+          status,
+          provider: authorization.provider,
+          provider_payment_id: authorization.providerPaymentId ?? null,
+          failure_code: authorization.failureCode ?? null,
+          failure_message: authorization.failureMessage ?? null,
+          authorized_at: authorization.success ? now : null,
+          failed_at: authorization.success ? null : now,
+        }, trx);
+        const responseBody = this.toDto(payment);
+
+        await this.idempotencyService.markCompleted({
+          idempotencyRecordId: idempotencyDecision.recordId,
+          responseStatusCode: 201,
+          responseBody,
+          resourceType: 'payment',
+          resourceId: responseBody.id,
+          trx,
+        });
+
+        return responseBody;
+      });
+    } catch (error) {
+      await this.idempotencyService
+        .markFailed({ idempotencyRecordId: idempotencyDecision.recordId })
+        .catch(() => undefined);
+
+      throw error;
+    }
   };
 
   public getById = async (query: GetPaymentQuery): Promise<PaymentDto> => {
