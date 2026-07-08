@@ -5,6 +5,16 @@ import ApiError from '../../types/errors/api-error';
 import IdempotencyService from '../idempotency/idempotency-service';
 import ProviderRegistryService from '../providers/provider-registry-service';
 
+export type PaymentsDataAccessPort = Pick<
+  PaymentsDataAccess,
+  'insert' | 'findById' | 'withTransaction'
+>;
+export type IdempotencyServicePort = Pick<
+  IdempotencyService,
+  'buildRequestHash' | 'getExistingOrStart' | 'markCompleted' | 'markFailed'
+>;
+export type ProviderRegistryServicePort = Pick<ProviderRegistryService, 'getDefaultProvider'>;
+
 export const PaymentStatus = {
   AUTHORIZED: 'AUTHORIZED',
   FAILED: 'FAILED',
@@ -38,14 +48,14 @@ export interface PaymentDto {
 }
 
 export default class PaymentsService {
-  private paymentsDataAccess: PaymentsDataAccess;
-  private idempotencyService: IdempotencyService;
-  private providerRegistryService: ProviderRegistryService;
+  private paymentsDataAccess: PaymentsDataAccessPort;
+  private idempotencyService: IdempotencyServicePort;
+  private providerRegistryService: ProviderRegistryServicePort;
 
   constructor(deps: {
-    paymentsDataAccess: PaymentsDataAccess;
-    idempotencyService: IdempotencyService;
-    providerRegistryService: ProviderRegistryService;
+    paymentsDataAccess: PaymentsDataAccessPort;
+    idempotencyService: IdempotencyServicePort;
+    providerRegistryService: ProviderRegistryServicePort;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
     this.idempotencyService = deps.idempotencyService;

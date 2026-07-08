@@ -5,8 +5,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
-    "test:unit": "node --test tests/unit/*.test.js"
+    "start": "node dist/index.js"
   },
   "dependencies": {
     "@payment-orchestration-platform/openapi-kit": "0.1.0",

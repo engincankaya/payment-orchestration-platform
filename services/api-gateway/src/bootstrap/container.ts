@@ -18,6 +18,7 @@ const container = createContainer({
 container.register({
   container: asValue(container),
   env: asValue(process.env),
+  fetchFn: asValue(globalThis.fetch.bind(globalThis)),
   knex: asValue(knex),
   logger: asFunction(logger).singleton(),
   server: asClass(ServerApplication).singleton(),

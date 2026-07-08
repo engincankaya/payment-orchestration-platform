@@ -93,7 +93,12 @@ test('root package is orchestration-only and does not expose runtime dependencie
   assert.equal(packageJson.exports, undefined);
   assert.deepEqual(packageJson.workspaces, ['packages/*', 'services/*']);
   assert.deepEqual(packageJson.dependencies ?? {}, {});
-  assert.deepEqual(packageJson.devDependencies ?? {}, {});
+  assert.deepEqual(Object.keys(packageJson.devDependencies ?? {}).sort(), [
+    '@swc/core',
+    '@swc/jest',
+    '@types/jest',
+    'jest',
+  ]);
 });
 
 test('service source files do not import another service internal runtime code', () => {

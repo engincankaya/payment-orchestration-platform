@@ -7,14 +7,19 @@ import IdempotencyDataAccess, {
 } from '../../data-access/idempotency/idempotency-data-access';
 import ApiError from '../../types/errors/api-error';
 
+export type IdempotencyDataAccessPort = Pick<
+  IdempotencyDataAccess,
+  'findByScopeAndKey' | 'tryInsertProcessing' | 'reactivateFailed' | 'markCompleted' | 'markFailed'
+>;
+
 export type IdempotencyDecision =
   | { type: 'STARTED'; recordId: string }
   | { type: 'COMPLETED'; responseStatusCode: number; responseBody: unknown };
 
 export default class IdempotencyService {
-  private idempotencyDataAccess: IdempotencyDataAccess;
+  private idempotencyDataAccess: IdempotencyDataAccessPort;
 
-  constructor(deps: { idempotencyDataAccess: IdempotencyDataAccess }) {
+  constructor(deps: { idempotencyDataAccess: IdempotencyDataAccessPort }) {
     this.idempotencyDataAccess = deps.idempotencyDataAccess;
   }
 
