@@ -7,7 +7,7 @@ on:
 
 jobs:
   test:
-    name: Build & Architecture Tests
+    name: Build & Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +24,13 @@ jobs:
         run: npm run build --workspaces
 
       - name: Run architecture tests
-        run: npm test
+        run: npm run test:architecture
+
+      - name: Run test typecheck
+        run: npm run typecheck:tests
+
+      - name: Run unit tests
+        run: npm run test:unit
 
       - name: Run integration tests
         run: npm run test:integration
