@@ -117,6 +117,7 @@ test('init custom routes validates metadata and fails fast at startup', () => {
     assert.match(routeSource, /Middleware not found/);
     assert.match(routeSource, /Unsupported HTTP method/);
     assert.match(routeSource, /createValidationHandler/);
+    assert.match(routeSource, /path,\s*\.\.\.middlewares,\s*validationHandler,\s*controllerFunction/);
   }
 });
 

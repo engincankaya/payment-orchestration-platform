@@ -208,6 +208,23 @@ describe('Payment Service idempotency integration', () => {
     expect(Number(count[0].count)).toBe(0);
   });
 
+  it('rejects unauthenticated invalid requests before validation and does not create an idempotency record', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('idempotency-key', 'idem-unauthenticated-invalid')
+      .send({
+        merchantId,
+        amountMinor: 10.5,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+
+    const count = await knex('idempotency_keys').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(0);
+  });
+
   it('returns the same response for the same idempotency key and body without calling provider twice', async () => {
     const provider = createProviderRegistryMock();
     const app = createApp(provider.registry);
