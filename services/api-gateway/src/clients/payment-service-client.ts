@@ -1,4 +1,4 @@
-import { CORRELATION_ID_HEADER } from '../constants';
+import { CORRELATION_ID_HEADER, BASE_INTERNAL_API_PATH } from '../constants';
 import ApiError from '../types/errors/api-error';
 
 export type FetchFn = typeof fetch;
@@ -28,7 +28,7 @@ export default class PaymentServiceClient {
   }
 
   public create = async (command: CreatePaymentClientCommand) => {
-    return this.request('/internal/payments', {
+    return this.request(`${BASE_INTERNAL_API_PATH}/payments`, {
       method: 'POST',
       correlationId: command.correlationId,
       idempotencyKey: command.idempotencyKey,
@@ -41,7 +41,7 @@ export default class PaymentServiceClient {
   };
 
   public getById = async (query: GetPaymentClientQuery) => {
-    return this.request(`/internal/payments/${query.paymentId}`, {
+    return this.request(`${BASE_INTERNAL_API_PATH}/payments/${query.paymentId}`, {
       method: 'GET',
       correlationId: query.correlationId,
     });
