@@ -1,5 +1,6 @@
 import ApiKeyAuthProvider, { AuthenticatedClient } from './api-key-auth-provider';
 
+// Public auth boundary for gateway endpoints; controllers never depend on a concrete auth mechanism.
 export default class ExternalAuthService {
   private apiKeyAuthProvider: ApiKeyAuthProvider;
 

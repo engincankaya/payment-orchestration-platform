@@ -25,6 +25,11 @@ export default class PaymentServiceClient {
     this.baseUrl = deps.env.PAYMENT_SERVICE_BASE_URL ?? 'http://payment-service:8080';
     this.internalToken = deps.env.INTERNAL_SERVICE_TOKEN ?? '';
     this.fetchFn = deps.fetchFn ?? globalThis.fetch.bind(globalThis);
+
+    // Gateway must never forward an empty internal token to downstream services.
+    if (!this.internalToken) {
+      throw new Error('INTERNAL_SERVICE_TOKEN is required');
+    }
   }
 
   public create = async (command: CreatePaymentClientCommand) => {

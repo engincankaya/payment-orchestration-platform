@@ -205,7 +205,8 @@ test('gateway payment client and payment service routes stay aligned with genera
   const client = read('services/api-gateway/src/clients/payment-service-client.ts');
   const routes = read('services/payment-service/src/server/routes/payments/payments.ts');
 
-  assert.match(client, /\/internal\/payments/);
+  assert.match(client, /BASE_INTERNAL_API_PATH/);
+  assert.match(client, /\/payments/);
   assert.match(routes, /BASE_INTERNAL_API_PATH/);
   assert.match(routes, /\/payments/);
 });

@@ -1,6 +1,15 @@
 import PaymentServiceClient from '../../src/clients/payment-service-client';
 
 describe('PaymentServiceClient', () => {
+  it('fails fast when INTERNAL_SERVICE_TOKEN is missing', () => {
+    expect(
+      () =>
+        new PaymentServiceClient({
+          env: { PAYMENT_SERVICE_BASE_URL: 'http://payment-service.test' },
+        }),
+    ).toThrow('INTERNAL_SERVICE_TOKEN is required');
+  });
+
   it('forwards idempotency key and correlation id to payment service', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
