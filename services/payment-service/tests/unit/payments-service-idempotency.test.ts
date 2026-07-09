@@ -3,6 +3,7 @@ import PaymentsService, {
   PaymentsDataAccessPort,
   ProviderRegistryServicePort,
 } from '../../src/services/payments/payments-service';
+import { Logger } from '../../src/utils/logger';
 
 const makePaymentsDataAccessMock = (
   overrides: Partial<jest.Mocked<PaymentsDataAccessPort>> = {},
@@ -40,15 +41,23 @@ const makeProviderRegistryMock = (
   ...overrides,
 });
 
+const makeLoggerMock = (): jest.Mocked<Logger> => ({
+  info: jest.fn(),
+  warn: jest.fn(),
+  error: jest.fn(),
+});
+
 const makeService = (deps?: {
   paymentsDataAccess?: jest.Mocked<PaymentsDataAccessPort>;
   idempotencyService?: jest.Mocked<IdempotencyServicePort>;
   providerRegistryService?: jest.Mocked<ProviderRegistryServicePort>;
+  logger?: jest.Mocked<Logger>;
 }) =>
   new PaymentsService({
     paymentsDataAccess: deps?.paymentsDataAccess ?? makePaymentsDataAccessMock(),
     idempotencyService: deps?.idempotencyService ?? makeIdempotencyServiceMock(),
     providerRegistryService: deps?.providerRegistryService ?? makeProviderRegistryMock(),
+    logger: deps?.logger ?? makeLoggerMock(),
   });
 
 describe('PaymentsService idempotency', () => {
@@ -233,6 +242,7 @@ describe('PaymentsService idempotency', () => {
 
   it('keeps the original create error when marking idempotency failed also fails', async () => {
     const markFailed = jest.fn().mockRejectedValue(new Error('idempotency unavailable'));
+    const logger = makeLoggerMock();
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
         insert: jest.fn().mockRejectedValue(new Error('database unavailable')),
@@ -240,6 +250,7 @@ describe('PaymentsService idempotency', () => {
       idempotencyService: makeIdempotencyServiceMock({
         markFailed,
       }),
+      logger,
     });
 
     await expect(
@@ -253,5 +264,13 @@ describe('PaymentsService idempotency', () => {
     ).rejects.toThrow('database unavailable');
 
     expect(markFailed).toHaveBeenCalledWith({ idempotencyRecordId: 'idem-1' });
+    expect(logger.error).toHaveBeenCalledWith(
+      'Failed to mark idempotency record as failed',
+      expect.objectContaining({
+        idempotencyRecordId: 'idem-1',
+        message: 'idempotency unavailable',
+        stack: expect.any(String),
+      }),
+    );
   });
 });

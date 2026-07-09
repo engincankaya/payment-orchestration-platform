@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import PaymentsDataAccess, { PaymentRecord } from '../../data-access/payments/payments-data-access';
 import ApiError from '../../types/errors/api-error';
+import { Logger } from '../../utils/logger';
 import IdempotencyService from '../idempotency/idempotency-service';
 import ProviderRegistryService from '../providers/provider-registry-service';
 
@@ -51,15 +52,18 @@ export default class PaymentsService {
   private paymentsDataAccess: PaymentsDataAccessPort;
   private idempotencyService: IdempotencyServicePort;
   private providerRegistryService: ProviderRegistryServicePort;
+  private logger: Logger;
 
   constructor(deps: {
     paymentsDataAccess: PaymentsDataAccessPort;
     idempotencyService: IdempotencyServicePort;
     providerRegistryService: ProviderRegistryServicePort;
+    logger: Logger;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
     this.idempotencyService = deps.idempotencyService;
     this.providerRegistryService = deps.providerRegistryService;
+    this.logger = deps.logger;
   }
 
   public create = async (command: CreatePaymentCommand): Promise<PaymentDto> => {
@@ -122,7 +126,14 @@ export default class PaymentsService {
     } catch (error) {
       await this.idempotencyService
         .markFailed({ idempotencyRecordId: idempotencyDecision.recordId })
-        .catch(() => undefined);
+        .catch((markFailedError) => {
+          this.logger.error('Failed to mark idempotency record as failed', {
+            idempotencyRecordId: idempotencyDecision.recordId,
+            message:
+              markFailedError instanceof Error ? markFailedError.message : String(markFailedError),
+            stack: markFailedError instanceof Error ? markFailedError.stack : undefined,
+          });
+        });
 
       throw error;
     }

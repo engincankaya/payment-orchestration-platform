@@ -17,6 +17,8 @@ export default function errorMiddleware(deps: { logger: Logger }): ErrorRequestH
       code,
       correlationId,
       isOperational: isApiError ? error.isOperational : false,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
     });
 
     return res.status(statusCode).json({

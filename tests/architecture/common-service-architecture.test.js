@@ -154,6 +154,8 @@ test('correlation and error middleware follow the required response standards', 
     assert.match(errorSource, /instanceof ApiError/);
     assert.match(errorSource, /INTERNAL_SERVER_ERROR/);
     assert.match(errorSource, /correlationId/);
-    assert.doesNotMatch(errorSource, /stack/);
+    assert.match(errorSource, /deps\.logger\.error/);
+    assert.match(errorSource, /message:\s*error instanceof Error/);
+    assert.match(errorSource, /stack:\s*error instanceof Error/);
   }
 });
