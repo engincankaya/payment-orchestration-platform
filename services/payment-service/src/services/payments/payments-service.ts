@@ -72,17 +72,22 @@ export default class PaymentsService {
       amountMinor: command.amountMinor,
       currency: command.currency,
     });
+    const reservedPaymentId = randomUUID();
     const idempotencyDecision = await this.idempotencyService.getExistingOrStart({
       scope: `payments:create:${command.merchantId}`,
       idempotencyKey: command.idempotencyKey,
       requestHash,
+      resource: {
+        type: 'payment',
+        id: reservedPaymentId,
+      },
     });
 
     if (idempotencyDecision.type === 'COMPLETED') {
       return idempotencyDecision.responseBody as PaymentDto;
     }
 
-    const paymentId = randomUUID();
+    const paymentId = idempotencyDecision.resourceId;
 
     try {
       const provider = this.providerRegistryService.getDefaultProvider();

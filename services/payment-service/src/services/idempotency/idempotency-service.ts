@@ -9,18 +9,41 @@ import ApiError from '../../types/errors/api-error';
 
 export type IdempotencyDataAccessPort = Pick<
   IdempotencyDataAccess,
-  'findByScopeAndKey' | 'tryInsertProcessing' | 'reactivateFailed' | 'markCompleted' | 'markFailed'
+  | 'findByScopeAndKey'
+  | 'tryInsertProcessing'
+  | 'reactivateFailed'
+  | 'takeoverExpiredProcessing'
+  | 'markCompleted'
+  | 'markFailed'
 >;
 
 export type IdempotencyDecision =
-  | { type: 'STARTED'; recordId: string }
+  | { type: 'STARTED'; recordId: string; resourceId: string }
   | { type: 'COMPLETED'; responseStatusCode: number; responseBody: unknown };
 
 export default class IdempotencyService {
   private idempotencyDataAccess: IdempotencyDataAccessPort;
+  private processingLeaseMs: number;
+  private completedTtlMs: number;
+  private failedTtlMs: number;
 
-  constructor(deps: { idempotencyDataAccess: IdempotencyDataAccessPort }) {
+  constructor(deps: { idempotencyDataAccess: IdempotencyDataAccessPort; env?: NodeJS.ProcessEnv }) {
     this.idempotencyDataAccess = deps.idempotencyDataAccess;
+    this.processingLeaseMs = this.parsePositiveNumber(
+      deps.env?.IDEMPOTENCY_PROCESSING_LEASE_MS,
+      60_000,
+      'IDEMPOTENCY_PROCESSING_LEASE_MS',
+    );
+    this.completedTtlMs = this.parsePositiveNumber(
+      deps.env?.IDEMPOTENCY_COMPLETED_TTL_MS,
+      86_400_000,
+      'IDEMPOTENCY_COMPLETED_TTL_MS',
+    );
+    this.failedTtlMs = this.parsePositiveNumber(
+      deps.env?.IDEMPOTENCY_FAILED_TTL_MS,
+      3_600_000,
+      'IDEMPOTENCY_FAILED_TTL_MS',
+    );
   }
 
   public buildRequestHash = (body: unknown) => {
@@ -32,6 +55,10 @@ export default class IdempotencyService {
     scope: string;
     idempotencyKey: string;
     requestHash: string;
+    resource: {
+      type: string;
+      id: string;
+    };
   }): Promise<IdempotencyDecision> => {
     const existing = await this.idempotencyDataAccess.findByScopeAndKey(
       input.scope,
@@ -42,10 +69,13 @@ export default class IdempotencyService {
       return this.decideFromExisting(existing, input.requestHash);
     }
 
-    const inserted = await this.idempotencyDataAccess.tryInsertProcessing(input);
+    const inserted = await this.idempotencyDataAccess.tryInsertProcessing({
+      ...input,
+      processingExpiresAt: this.buildProcessingExpiresAt(),
+    });
 
     if (inserted) {
-      return { type: 'STARTED', recordId: inserted.id };
+      return this.buildStartedDecision(inserted);
     }
 
     const recordAfterConflict = await this.idempotencyDataAccess.findByScopeAndKey(
@@ -79,6 +109,7 @@ export default class IdempotencyService {
       responseBody: input.responseBody,
       resourceType: input.resourceType,
       resourceId: input.resourceId,
+      expiresAt: this.buildExpiresAt(this.completedTtlMs),
     }, input.trx);
   };
 
@@ -86,7 +117,11 @@ export default class IdempotencyService {
     idempotencyRecordId: string;
     trx?: Knex.Transaction;
   }) => {
-    return this.idempotencyDataAccess.markFailed(input.idempotencyRecordId, input.trx);
+    return this.idempotencyDataAccess.markFailed(
+      input.idempotencyRecordId,
+      this.buildExpiresAt(this.failedTtlMs),
+      input.trx,
+    );
   };
 
   private decideFromExisting = async (
@@ -113,10 +148,23 @@ export default class IdempotencyService {
       const reactivated = await this.idempotencyDataAccess.reactivateFailed(
         record.id,
         requestHash,
+        this.buildProcessingExpiresAt(),
       );
 
       if (reactivated) {
-        return { type: 'STARTED', recordId: reactivated.id };
+        return this.buildStartedDecision(reactivated);
+      }
+    }
+
+    if (record.status === IdempotencyStatus.PROCESSING && this.isProcessingExpired(record)) {
+      const reactivated = await this.idempotencyDataAccess.takeoverExpiredProcessing(
+        record.id,
+        requestHash,
+        this.buildProcessingExpiresAt(),
+      );
+
+      if (reactivated) {
+        return this.buildStartedDecision(reactivated);
       }
     }
 
@@ -137,6 +185,45 @@ export default class IdempotencyService {
     } catch {
       return responseBody;
     }
+  }
+
+  private buildStartedDecision(record: IdempotencyRecord): IdempotencyDecision {
+    if (!record.resource_id) {
+      throw new ApiError({
+        code: 'IDEMPOTENCY_RESOURCE_MISSING',
+        message: 'Idempotency resource reference is missing',
+        statusCode: 500,
+        isOperational: false,
+      });
+    }
+
+    return { type: 'STARTED', recordId: record.id, resourceId: record.resource_id };
+  }
+
+  private buildProcessingExpiresAt() {
+    return this.buildExpiresAt(this.processingLeaseMs);
+  }
+
+  private buildExpiresAt(ttlMs: number) {
+    return new Date(Date.now() + ttlMs);
+  }
+
+  private isProcessingExpired(record: IdempotencyRecord) {
+    if (!record.processing_expires_at) {
+      return false;
+    }
+
+    return new Date(record.processing_expires_at).getTime() <= Date.now();
+  }
+
+  private parsePositiveNumber(value: string | undefined, fallback: number, name: string) {
+    const parsed = Number(value ?? fallback);
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new Error(`${name} must be a positive number`);
+    }
+
+    return parsed;
   }
 
   private canonicalize(value: unknown): unknown {

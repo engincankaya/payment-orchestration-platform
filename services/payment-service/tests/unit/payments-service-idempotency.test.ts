@@ -21,6 +21,7 @@ const makeIdempotencyServiceMock = (
   getExistingOrStart: jest.fn().mockResolvedValue({
     type: 'STARTED',
     recordId: 'idem-1',
+    resourceId: 'payment-1',
   }),
   markCompleted: jest.fn().mockResolvedValue(null),
   markFailed: jest.fn().mockResolvedValue(null),
@@ -114,6 +115,11 @@ describe('PaymentsService idempotency', () => {
 
   it('stores successful payment response in idempotency record', async () => {
     const trx = { trx: true };
+    const authorize = jest.fn().mockResolvedValue({
+      success: true,
+      provider: 'mock',
+      providerPaymentId: 'provider-payment-1',
+    });
     const insert = jest.fn().mockImplementation(async (record) => ({
       ...record,
       created_at: '2026-07-08T00:00:00.000Z',
@@ -123,6 +129,7 @@ describe('PaymentsService idempotency', () => {
     const getExistingOrStart = jest.fn().mockResolvedValue({
       type: 'STARTED',
       recordId: 'idem-1',
+      resourceId: 'payment-1',
     });
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
@@ -135,11 +142,7 @@ describe('PaymentsService idempotency', () => {
       }),
       providerRegistryService: makeProviderRegistryMock({
         getDefaultProvider: jest.fn().mockReturnValue({
-          authorize: jest.fn().mockResolvedValue({
-            success: true,
-            provider: 'mock',
-            providerPaymentId: 'provider-payment-1',
-          }),
+          authorize,
           capture: jest.fn(),
         }),
       }),
@@ -157,8 +160,21 @@ describe('PaymentsService idempotency', () => {
       scope: 'payments:create:merchant-1',
       idempotencyKey: 'idem-key-1',
       requestHash: 'hash-1',
+      resource: {
+        type: 'payment',
+        id: expect.any(String),
+      },
     });
     expect(insert).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      paymentId: 'payment-1',
+    }));
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'payment-1',
+      }),
+      trx,
+    );
     expect(markCompleted).toHaveBeenCalledWith({
       idempotencyRecordId: 'idem-1',
       resourceType: 'payment',
@@ -271,6 +287,55 @@ describe('PaymentsService idempotency', () => {
         message: 'idempotency unavailable',
         stack: expect.any(String),
       }),
+    );
+  });
+
+  it('uses the reactivated idempotency resource id instead of generating a new payment id', async () => {
+    const authorize = jest.fn().mockResolvedValue({
+      success: true,
+      provider: 'mock',
+      providerPaymentId: 'provider-payment-1',
+    });
+    const insert = jest.fn().mockImplementation(async (record) => ({
+      ...record,
+      created_at: '2026-07-08T00:00:00.000Z',
+      updated_at: '2026-07-08T00:00:00.000Z',
+    }));
+    const service = makeService({
+      paymentsDataAccess: makePaymentsDataAccessMock({
+        insert,
+      }),
+      idempotencyService: makeIdempotencyServiceMock({
+        getExistingOrStart: jest.fn().mockResolvedValue({
+          type: 'STARTED',
+          recordId: 'idem-1',
+          resourceId: 'reserved-payment-1',
+        }),
+      }),
+      providerRegistryService: makeProviderRegistryMock({
+        getDefaultProvider: jest.fn().mockReturnValue({
+          authorize,
+          capture: jest.fn(),
+        }),
+      }),
+    });
+
+    await service.create({
+      correlationId: 'correlation-1',
+      idempotencyKey: 'idem-key-1',
+      merchantId: 'merchant-1',
+      amountMinor: 1000,
+      currency: 'TRY',
+    });
+
+    expect(authorize).toHaveBeenCalledWith(expect.objectContaining({
+      paymentId: 'reserved-payment-1',
+    }));
+    expect(insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'reserved-payment-1',
+      }),
+      expect.anything(),
     );
   });
 });
