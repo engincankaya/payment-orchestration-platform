@@ -20,8 +20,8 @@ export default class PaymentsController {
         currency: req.body.currency,
       });
 
-      return res.status(201).json({
-        data: result,
+      return res.status(result.statusCode).json({
+        data: result.body,
         correlationId: req.headers[CORRELATION_ID_HEADER],
       });
     } catch (error) {

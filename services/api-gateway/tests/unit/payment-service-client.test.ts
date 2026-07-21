@@ -33,6 +33,7 @@ describe('PaymentServiceClient', () => {
   it('forwards idempotency key and correlation id to payment service', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
+      status: 201,
       json: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     });
 
@@ -63,6 +64,29 @@ describe('PaymentServiceClient', () => {
         }),
       }),
     );
+  });
+
+  it('preserves successful payment-service create response status', async () => {
+    const paymentResponse = { id: 'payment-1', status: 'AUTHORIZED' };
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: jest.fn().mockResolvedValue(paymentResponse),
+    });
+    const client = createClient(fetchMock);
+
+    await expect(
+      client.create({
+        correlationId: 'correlation-1',
+        idempotencyKey: 'idem-key-1',
+        merchantId: 'merchant-1',
+        amountMinor: 1000,
+        currency: 'TRY',
+      }),
+    ).resolves.toEqual({
+      statusCode: 202,
+      body: paymentResponse,
+    });
   });
 
   it('maps payment service idempotency conflict without retrying', async () => {
@@ -140,6 +164,7 @@ describe('PaymentServiceClient', () => {
   it('passes an abort signal to outbound payment service requests', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,
+      status: 200,
       json: jest.fn().mockResolvedValue({ id: 'payment-1' }),
     });
     const client = createClient(fetchMock);
@@ -163,6 +188,7 @@ describe('PaymentServiceClient', () => {
       .mockRejectedValueOnce(new Error('ECONNRESET'))
       .mockResolvedValueOnce({
         ok: true,
+        status: 200,
         json: jest.fn().mockResolvedValue({ id: 'payment-1' }),
       });
     const client = createClient(fetchMock);
@@ -184,6 +210,7 @@ describe('PaymentServiceClient', () => {
       .mockRejectedValueOnce(timeoutError)
       .mockResolvedValueOnce({
         ok: true,
+        status: 200,
         json: jest.fn().mockResolvedValue({ id: 'payment-1' }),
       });
     const client = createClient(fetchMock);

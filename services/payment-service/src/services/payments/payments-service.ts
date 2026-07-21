@@ -48,6 +48,11 @@ export interface PaymentDto {
   createdAt: string;
 }
 
+export interface CreatePaymentResult {
+  statusCode: number;
+  body: PaymentDto;
+}
+
 export default class PaymentsService {
   private paymentsDataAccess: PaymentsDataAccessPort;
   private idempotencyService: IdempotencyServicePort;
@@ -66,7 +71,7 @@ export default class PaymentsService {
     this.logger = deps.logger;
   }
 
-  public create = async (command: CreatePaymentCommand): Promise<PaymentDto> => {
+  public create = async (command: CreatePaymentCommand): Promise<CreatePaymentResult> => {
     const requestHash = this.idempotencyService.buildRequestHash({
       merchantId: command.merchantId,
       amountMinor: command.amountMinor,
@@ -84,7 +89,10 @@ export default class PaymentsService {
     });
 
     if (idempotencyDecision.type === 'COMPLETED') {
-      return idempotencyDecision.responseBody as PaymentDto;
+      return {
+        statusCode: idempotencyDecision.responseStatusCode,
+        body: idempotencyDecision.responseBody as PaymentDto,
+      };
     }
 
     const paymentId = idempotencyDecision.resourceId;
@@ -101,7 +109,7 @@ export default class PaymentsService {
       const now = new Date();
       const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
 
-      return await this.paymentsDataAccess.withTransaction(async (trx) => {
+      const body = await this.paymentsDataAccess.withTransaction(async (trx) => {
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
           merchant_id: command.merchantId,
@@ -128,6 +136,8 @@ export default class PaymentsService {
 
         return responseBody;
       });
+
+      return { statusCode: 201, body };
     } catch (error) {
       await this.idempotencyService
         .markFailed({ idempotencyRecordId: idempotencyDecision.recordId })

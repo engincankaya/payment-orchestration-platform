@@ -81,6 +81,7 @@ describe('API Gateway HTTP', () => {
     };
     const fetchFn = jest.fn().mockResolvedValue({
       ok: true,
+      status: 201,
       json: jest.fn().mockResolvedValue(paymentResponse),
     });
 
@@ -110,5 +111,41 @@ describe('API Gateway HTTP', () => {
         }),
       }),
     );
+  });
+
+  it('preserves payment service create response status for authenticated valid requests', async () => {
+    const paymentResponse = {
+      id: '9cfd22b0-c416-45a5-8f93-ed066ac3c3cf',
+      merchantId: '0bc5c3bf-3b17-444e-9d92-f3fcb03f1d82',
+      amountMinor: 1000,
+      currency: 'TRY',
+      status: 'AUTHORIZED',
+      provider: 'mock-provider',
+      providerPaymentId: 'provider-payment-1',
+      failureCode: null,
+      failureMessage: null,
+      createdAt: '2026-07-09T10:00:00.000Z',
+    };
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      json: jest.fn().mockResolvedValue(paymentResponse),
+    });
+
+    const response = await request(createTestServer(fetchFn))
+      .post('/api/v1/payments')
+      .set('x-api-key', TEST_ENV.PUBLIC_API_KEY)
+      .set('idempotency-key', 'idem-key-1')
+      .send({
+        merchantId: paymentResponse.merchantId,
+        amountMinor: paymentResponse.amountMinor,
+        currency: paymentResponse.currency,
+      })
+      .expect(202);
+
+    expect(response.body).toEqual({
+      data: paymentResponse,
+      correlationId: expect.any(String),
+    });
   });
 });

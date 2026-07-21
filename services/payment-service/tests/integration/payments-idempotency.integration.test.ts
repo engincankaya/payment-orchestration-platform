@@ -326,6 +326,50 @@ describe('Payment Service idempotency integration', () => {
     expect(provider.authorize).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves cached idempotency response status code on replay', async () => {
+    const body = {
+      merchantId,
+      amountMinor: 1000,
+      currency: 'TRY',
+    };
+    const cachedPayment = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      merchantId,
+      amountMinor: 1000,
+      currency: 'TRY',
+      status: 'AUTHORIZED',
+      provider: 'integration-provider',
+      providerPaymentId: 'provider_payment_1',
+      failureCode: null,
+      failureMessage: null,
+      createdAt: '2026-07-09T10:00:00.000Z',
+    };
+    const provider = createProviderRegistryMock();
+
+    await knex('idempotency_keys').insert({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-replay-status',
+      request_hash: buildRequestHash(body),
+      status: 'COMPLETED',
+      resource_type: 'payment',
+      resource_id: cachedPayment.id,
+      response_status_code: 202,
+      response_body: cachedPayment,
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const response = await request(createApp(provider.registry))
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-replay-status')
+      .send(body);
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual(cachedPayment);
+    expect(provider.authorize).not.toHaveBeenCalled();
+  });
+
   it('rejects the same idempotency key with a different request body', async () => {
     const app = createApp();
 

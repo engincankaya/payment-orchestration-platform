@@ -16,6 +16,11 @@ export interface GetPaymentClientQuery {
   paymentId: string;
 }
 
+export interface PaymentServiceResponse<T = unknown> {
+  statusCode: number;
+  body: T;
+}
+
 export default class PaymentServiceClient {
   private baseUrl: string;
   private internalToken: string;
@@ -38,7 +43,7 @@ export default class PaymentServiceClient {
     }
   }
 
-  public create = async (command: CreatePaymentClientCommand) => {
+  public create = async (command: CreatePaymentClientCommand): Promise<PaymentServiceResponse> => {
     return this.request(`${BASE_INTERNAL_API_PATH}/payments`, {
       method: 'POST',
       correlationId: command.correlationId,
@@ -52,10 +57,12 @@ export default class PaymentServiceClient {
   };
 
   public getById = async (query: GetPaymentClientQuery) => {
-    return this.request(`${BASE_INTERNAL_API_PATH}/payments/${query.paymentId}`, {
+    const result = await this.request(`${BASE_INTERNAL_API_PATH}/payments/${query.paymentId}`, {
       method: 'GET',
       correlationId: query.correlationId,
     });
+
+    return result.body;
   };
 
   private request = async (
@@ -66,7 +73,7 @@ export default class PaymentServiceClient {
       idempotencyKey?: string;
       body?: unknown;
     },
-  ) => {
+  ): Promise<PaymentServiceResponse> => {
     const maxAttempts = options.method === 'GET' ? 2 : 1;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -83,6 +90,13 @@ export default class PaymentServiceClient {
         throw mappedError ?? error;
       }
     }
+
+    throw new ApiError({
+      code: 'PAYMENT_SERVICE_REQUEST_NOT_SENT',
+      message: 'Payment service request could not be sent',
+      statusCode: 500,
+      isOperational: false,
+    });
   };
 
   private send = async (
@@ -93,7 +107,7 @@ export default class PaymentServiceClient {
       idempotencyKey?: string;
       body?: unknown;
     },
-  ) => {
+  ): Promise<PaymentServiceResponse> => {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-internal-token': this.internalToken,
@@ -124,7 +138,10 @@ export default class PaymentServiceClient {
       });
     }
 
-    return responseBody;
+    return {
+      statusCode: response.status,
+      body: responseBody,
+    };
   };
 
   private mapTransportError(error: unknown) {

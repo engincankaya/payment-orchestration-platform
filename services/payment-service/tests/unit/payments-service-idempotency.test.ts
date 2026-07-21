@@ -87,7 +87,7 @@ describe('PaymentsService idempotency', () => {
       idempotencyService: makeIdempotencyServiceMock({
         getExistingOrStart: jest.fn().mockResolvedValue({
           type: 'COMPLETED',
-          responseStatusCode: 201,
+          responseStatusCode: 202,
           responseBody: cachedPayment,
         }),
         markCompleted,
@@ -105,7 +105,10 @@ describe('PaymentsService idempotency', () => {
         amountMinor: 1000,
         currency: 'TRY',
       }),
-    ).resolves.toEqual(cachedPayment);
+    ).resolves.toEqual({
+      statusCode: 202,
+      body: cachedPayment,
+    });
 
     expect(insert).not.toHaveBeenCalled();
     expect(withTransaction).not.toHaveBeenCalled();
@@ -156,6 +159,7 @@ describe('PaymentsService idempotency', () => {
       currency: 'TRY',
     });
 
+    expect(result.statusCode).toBe(201);
     expect(getExistingOrStart).toHaveBeenCalledWith({
       scope: 'payments:create:merchant-1',
       idempotencyKey: 'idem-key-1',
@@ -178,9 +182,9 @@ describe('PaymentsService idempotency', () => {
     expect(markCompleted).toHaveBeenCalledWith({
       idempotencyRecordId: 'idem-1',
       resourceType: 'payment',
-      resourceId: result.id,
+      resourceId: result.body.id,
       responseStatusCode: 201,
-      responseBody: result,
+      responseBody: result.body,
       trx,
     });
   });
@@ -220,12 +224,15 @@ describe('PaymentsService idempotency', () => {
     });
 
     expect(result).toMatchObject({
-      status: 'FAILED',
-      failureCode: 'MOCK_AUTHORIZATION_FAILED',
+      statusCode: 201,
+      body: {
+        status: 'FAILED',
+        failureCode: 'MOCK_AUTHORIZATION_FAILED',
+      },
     });
     expect(markCompleted).toHaveBeenCalledWith(
       expect.objectContaining({
-        responseBody: result,
+        responseBody: result.body,
         responseStatusCode: 201,
       }),
     );
