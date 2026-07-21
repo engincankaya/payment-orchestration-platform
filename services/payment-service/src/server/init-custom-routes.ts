@@ -55,7 +55,7 @@ export default function initCustomRoutes(app: Application, container: AwilixCont
     );
     const controllerFunction = resolveController(container, controller);
 
-    // Runtime routing and OpenAPI generation intentionally share the same route metadata.
-    app[method as ExpressMethod](path, validationHandler, ...middlewares, controllerFunction);
+    // Internal auth must run before validation so unauthenticated callers cannot probe schemas.
+    app[method as ExpressMethod](path, ...middlewares, validationHandler, controllerFunction);
   }
 }

@@ -14,7 +14,7 @@ COPY services/payment-service/tsconfig.json ./services/payment-service/tsconfig.
 COPY services/payment-service/src ./services/payment-service/src
 
 RUN npm run build --workspace @payment-orchestration-platform/openapi-kit
-RUN npm run build --workspace @paybridge/payment-service
+RUN npm run build --workspace @payment-orchestration-platform/payment-service
 
 WORKDIR /app/services/payment-service
 

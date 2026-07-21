@@ -14,7 +14,7 @@ COPY services/api-gateway/tsconfig.json ./services/api-gateway/tsconfig.json
 COPY services/api-gateway/src ./services/api-gateway/src
 
 RUN npm run build --workspace @payment-orchestration-platform/openapi-kit
-RUN npm run build --workspace @paybridge/api-gateway
+RUN npm run build --workspace @payment-orchestration-platform/api-gateway
 
 WORKDIR /app/services/api-gateway
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 
 import PaymentsDataAccess, { PaymentRecord } from '../../data-access/payments/payments-data-access';
 import ApiError from '../../types/errors/api-error';
+import { Logger } from '../../utils/logger';
 import IdempotencyService from '../idempotency/idempotency-service';
 import ProviderRegistryService from '../providers/provider-registry-service';
 
@@ -47,38 +48,54 @@ export interface PaymentDto {
   createdAt: string;
 }
 
+export interface CreatePaymentResult {
+  statusCode: number;
+  body: PaymentDto;
+}
+
 export default class PaymentsService {
   private paymentsDataAccess: PaymentsDataAccessPort;
   private idempotencyService: IdempotencyServicePort;
   private providerRegistryService: ProviderRegistryServicePort;
+  private logger: Logger;
 
   constructor(deps: {
     paymentsDataAccess: PaymentsDataAccessPort;
     idempotencyService: IdempotencyServicePort;
     providerRegistryService: ProviderRegistryServicePort;
+    logger: Logger;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
     this.idempotencyService = deps.idempotencyService;
     this.providerRegistryService = deps.providerRegistryService;
+    this.logger = deps.logger;
   }
 
-  public create = async (command: CreatePaymentCommand): Promise<PaymentDto> => {
+  public create = async (command: CreatePaymentCommand): Promise<CreatePaymentResult> => {
     const requestHash = this.idempotencyService.buildRequestHash({
       merchantId: command.merchantId,
       amountMinor: command.amountMinor,
       currency: command.currency,
     });
+    const reservedPaymentId = randomUUID();
     const idempotencyDecision = await this.idempotencyService.getExistingOrStart({
       scope: `payments:create:${command.merchantId}`,
       idempotencyKey: command.idempotencyKey,
       requestHash,
+      resource: {
+        type: 'payment',
+        id: reservedPaymentId,
+      },
     });
 
     if (idempotencyDecision.type === 'COMPLETED') {
-      return idempotencyDecision.responseBody as PaymentDto;
+      return {
+        statusCode: idempotencyDecision.responseStatusCode,
+        body: idempotencyDecision.responseBody as PaymentDto,
+      };
     }
 
-    const paymentId = randomUUID();
+    const paymentId = idempotencyDecision.resourceId;
 
     try {
       const provider = this.providerRegistryService.getDefaultProvider();
@@ -92,7 +109,7 @@ export default class PaymentsService {
       const now = new Date();
       const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
 
-      return await this.paymentsDataAccess.withTransaction(async (trx) => {
+      const body = await this.paymentsDataAccess.withTransaction(async (trx) => {
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
           merchant_id: command.merchantId,
@@ -119,10 +136,19 @@ export default class PaymentsService {
 
         return responseBody;
       });
+
+      return { statusCode: 201, body };
     } catch (error) {
       await this.idempotencyService
         .markFailed({ idempotencyRecordId: idempotencyDecision.recordId })
-        .catch(() => undefined);
+        .catch((markFailedError) => {
+          this.logger.error('Failed to mark idempotency record as failed', {
+            idempotencyRecordId: idempotencyDecision.recordId,
+            message:
+              markFailedError instanceof Error ? markFailedError.message : String(markFailedError),
+            stack: markFailedError instanceof Error ? markFailedError.stack : undefined,
+          });
+        });
 
       throw error;
     }

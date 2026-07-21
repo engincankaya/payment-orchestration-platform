@@ -14,7 +14,7 @@ COPY services/ledger-service/tsconfig.json ./services/ledger-service/tsconfig.js
 COPY services/ledger-service/src ./services/ledger-service/src
 
 RUN npm run build --workspace @payment-orchestration-platform/openapi-kit
-RUN npm run build --workspace @paybridge/ledger-service
+RUN npm run build --workspace @payment-orchestration-platform/ledger-service
 
 WORKDIR /app/services/ledger-service
 

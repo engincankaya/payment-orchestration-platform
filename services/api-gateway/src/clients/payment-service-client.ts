@@ -1,4 +1,4 @@
-import { CORRELATION_ID_HEADER } from '../constants';
+import { CORRELATION_ID_HEADER, BASE_INTERNAL_API_PATH } from '../constants';
 import ApiError from '../types/errors/api-error';
 
 export type FetchFn = typeof fetch;
@@ -16,19 +16,35 @@ export interface GetPaymentClientQuery {
   paymentId: string;
 }
 
+export interface PaymentServiceResponse<T = unknown> {
+  statusCode: number;
+  body: T;
+}
+
 export default class PaymentServiceClient {
   private baseUrl: string;
   private internalToken: string;
   private fetchFn: FetchFn;
+  private timeoutMs: number;
 
   constructor(deps: { env: NodeJS.ProcessEnv; fetchFn?: FetchFn }) {
     this.baseUrl = deps.env.PAYMENT_SERVICE_BASE_URL ?? 'http://payment-service:8080';
     this.internalToken = deps.env.INTERNAL_SERVICE_TOKEN ?? '';
     this.fetchFn = deps.fetchFn ?? globalThis.fetch.bind(globalThis);
+    this.timeoutMs = Number(deps.env.PAYMENT_SERVICE_TIMEOUT_MS ?? 5000);
+
+    // Gateway must never forward an empty internal token to downstream services.
+    if (!this.internalToken) {
+      throw new Error('INTERNAL_SERVICE_TOKEN is required');
+    }
+
+    if (!Number.isFinite(this.timeoutMs) || this.timeoutMs <= 0) {
+      throw new Error('PAYMENT_SERVICE_TIMEOUT_MS must be a positive number');
+    }
   }
 
-  public create = async (command: CreatePaymentClientCommand) => {
-    return this.request('/internal/payments', {
+  public create = async (command: CreatePaymentClientCommand): Promise<PaymentServiceResponse> => {
+    return this.request(`${BASE_INTERNAL_API_PATH}/payments`, {
       method: 'POST',
       correlationId: command.correlationId,
       idempotencyKey: command.idempotencyKey,
@@ -41,10 +57,12 @@ export default class PaymentServiceClient {
   };
 
   public getById = async (query: GetPaymentClientQuery) => {
-    return this.request(`/internal/payments/${query.paymentId}`, {
+    const result = await this.request(`${BASE_INTERNAL_API_PATH}/payments/${query.paymentId}`, {
       method: 'GET',
       correlationId: query.correlationId,
     });
+
+    return result.body;
   };
 
   private request = async (
@@ -55,7 +73,41 @@ export default class PaymentServiceClient {
       idempotencyKey?: string;
       body?: unknown;
     },
-  ) => {
+  ): Promise<PaymentServiceResponse> => {
+    const maxAttempts = options.method === 'GET' ? 2 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await this.send(path, options);
+      } catch (error) {
+        const mappedError = this.mapTransportError(error);
+        const canRetry = options.method === 'GET' && attempt < maxAttempts && mappedError;
+
+        if (canRetry) {
+          continue;
+        }
+
+        throw mappedError ?? error;
+      }
+    }
+
+    throw new ApiError({
+      code: 'PAYMENT_SERVICE_REQUEST_NOT_SENT',
+      message: 'Payment service request could not be sent',
+      statusCode: 500,
+      isOperational: false,
+    });
+  };
+
+  private send = async (
+    path: string,
+    options: {
+      method: 'GET' | 'POST';
+      correlationId: string;
+      idempotencyKey?: string;
+      body?: unknown;
+    },
+  ): Promise<PaymentServiceResponse> => {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
       'x-internal-token': this.internalToken,
@@ -70,6 +122,7 @@ export default class PaymentServiceClient {
       method: options.method,
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
 
     const responseBody = await response.json().catch(() => null);
@@ -85,6 +138,29 @@ export default class PaymentServiceClient {
       });
     }
 
-    return responseBody;
+    return {
+      statusCode: response.status,
+      body: responseBody,
+    };
   };
+
+  private mapTransportError(error: unknown) {
+    if (error instanceof ApiError) {
+      return null;
+    }
+
+    if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+      return new ApiError({
+        code: 'PAYMENT_SERVICE_TIMEOUT',
+        message: 'Payment service request timed out',
+        statusCode: 504,
+      });
+    }
+
+    return new ApiError({
+      code: 'PAYMENT_SERVICE_UNAVAILABLE',
+      message: 'Payment service is unavailable',
+      statusCode: 502,
+    });
+  }
 }

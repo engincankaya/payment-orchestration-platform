@@ -39,7 +39,7 @@ test('each service package is independently runnable and private', () => {
     const packageJson = JSON.parse(readFile(`services/${serviceName}/package.json`));
 
     assert.equal(packageJson.private, true);
-    assert.equal(packageJson.name, `@paybridge/${serviceName}`);
+    assert.equal(packageJson.name, `@payment-orchestration-platform/${serviceName}`);
     assert.equal(typeof packageJson.scripts?.dev, 'string');
     assert.equal(typeof packageJson.scripts?.build, 'string');
     assert.equal(typeof packageJson.scripts?.start, 'string');

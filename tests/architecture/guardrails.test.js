@@ -132,3 +132,34 @@ test('service source files do not import another service internal runtime code',
 
   assert.deepEqual(violations, []);
 });
+
+test('internal auth middlewares use fail-closed timing-safe token checks', () => {
+  const serviceNames = listDirectories(servicesDir).filter((serviceName) =>
+    allowedServices.has(serviceName),
+  );
+  const violations = [];
+
+  for (const serviceName of serviceNames) {
+    const middlewarePath = path.join(
+      servicesDir,
+      serviceName,
+      'src/server/middlewares/internal-auth-middleware.ts',
+    );
+
+    if (!pathExists(middlewarePath)) {
+      continue;
+    }
+
+    const source = fs.readFileSync(middlewarePath, 'utf8');
+
+    if (!source.includes('timingSafeEquals')) {
+      violations.push(`${serviceName} internal auth does not use timingSafeEquals`);
+    }
+
+    if (source.includes('!== deps.env.INTERNAL_SERVICE_TOKEN')) {
+      violations.push(`${serviceName} internal auth uses raw token inequality`);
+    }
+  }
+
+  assert.deepEqual(violations, []);
+});

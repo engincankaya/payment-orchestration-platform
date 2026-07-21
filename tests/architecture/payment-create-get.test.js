@@ -54,6 +54,7 @@ test('payment-service create route validates money, currency, headers and intern
   assert.match(routes, /internalAuthMiddleware/);
   assert.match(routes, /idempotency-key/);
   assert.match(routes, /amountMinor/);
+  assert.match(routes, /AMOUNT_MINOR_MAX\s*=\s*1_000_000_000_000/);
   assert.match(routes, /\.integer\(\)\.positive\(\)/);
   assert.match(routes, /valid\('TRY',\s*'USD',\s*'EUR'\)/);
   assert.match(routes, /\.unknown\(true\)/);
@@ -91,4 +92,5 @@ test('gateway does not introduce database access for payment create/get', () => 
 
   assert.doesNotMatch(gatewayRoutes, /knex|DataAccess|paymentsDataAccess/);
   assert.doesNotMatch(gatewayService, /knex|DataAccess|paymentsDataAccess/);
+  assert.match(gatewayRoutes, /AMOUNT_MINOR_MAX\s*=\s*1_000_000_000_000/);
 });

@@ -8,7 +8,10 @@ import { GenericContainer, StartedTestContainer, Wait } from 'testcontainers';
 import { buildContainer } from '../../src/bootstrap/container';
 import * as createPaymentsMigration from '../../src/bootstrap/knex/migrations/001_create_payments';
 import * as createIdempotencyKeysMigration from '../../src/bootstrap/knex/migrations/002_create_idempotency_keys';
+import * as addIdempotencyLeaseMetadata from '../../src/bootstrap/knex/migrations/003_add_idempotency_lease_metadata';
+import * as hardenPaymentIntegrity from '../../src/bootstrap/knex/migrations/004_harden_payment_integrity';
 import IdempotencyDataAccess from '../../src/data-access/idempotency/idempotency-data-access';
+import { AMOUNT_MINOR_MAX } from '../../src/server/routes/payments/payments';
 import ServerApplication from '../../src/server/server';
 
 const internalToken = 'test-internal-token';
@@ -58,6 +61,12 @@ function buildRequestHash(body: unknown) {
   return createHash('sha256').update(JSON.stringify(canonicalize(body))).digest('hex');
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function createProviderRegistryMock() {
   const authorize = jest.fn().mockImplementation(async (input) => ({
     success: input.amountMinor !== 9999,
@@ -99,6 +108,8 @@ describe('Payment Service idempotency integration', () => {
     knex = createKnex(buildPostgresConnectionUri(postgres));
     await createPaymentsMigration.up(knex);
     await createIdempotencyKeysMigration.up(knex);
+    await addIdempotencyLeaseMetadata.up(knex);
+    await hardenPaymentIntegrity.up(knex);
   }, 120_000);
 
   afterAll(async () => {
@@ -110,11 +121,15 @@ describe('Payment Service idempotency integration', () => {
     await truncateTables(knex);
   });
 
-  function createTestContainer(providerRegistryService = createProviderRegistryMock().registry) {
+  function createTestContainer(
+    providerRegistryService = createProviderRegistryMock().registry,
+    env: NodeJS.ProcessEnv = {},
+  ) {
     return buildContainer({
       env: asValue({
         INTERNAL_SERVICE_TOKEN: internalToken,
         SERVICE_NAME: 'payment-service-test',
+        ...env,
       }),
       knex: asValue(knex),
       logger: asValue(silentLogger),
@@ -122,8 +137,11 @@ describe('Payment Service idempotency integration', () => {
     });
   }
 
-  function createApp(providerRegistryService = createProviderRegistryMock().registry) {
-    const container = createTestContainer(providerRegistryService);
+  function createApp(
+    providerRegistryService = createProviderRegistryMock().registry,
+    env: NodeJS.ProcessEnv = {},
+  ) {
+    const container = createTestContainer(providerRegistryService, env);
 
     return container.resolve<ServerApplication>('server').app;
   }
@@ -137,11 +155,15 @@ describe('Payment Service idempotency integration', () => {
       scope: `payments:create:${merchantId}`,
       idempotencyKey: 'idem-data-access-conflict',
       requestHash: 'hash-1',
+      resource: { type: 'payment', id: '55555555-5555-4555-8555-555555555555' },
+      processingExpiresAt: new Date(Date.now() + 60_000),
     });
     const second = await dataAccess.tryInsertProcessing({
       scope: `payments:create:${merchantId}`,
       idempotencyKey: 'idem-data-access-conflict',
       requestHash: 'hash-1',
+      resource: { type: 'payment', id: '66666666-6666-4666-8666-666666666666' },
+      processingExpiresAt: new Date(Date.now() + 60_000),
     });
 
     expect(first).toMatchObject({
@@ -161,16 +183,85 @@ describe('Payment Service idempotency integration', () => {
       scope: `payments:create:${merchantId}`,
       idempotencyKey: 'idem-data-access-scope',
       requestHash: 'hash-1',
+      resource: { type: 'payment', id: '77777777-7777-4777-8777-777777777777' },
+      processingExpiresAt: new Date(Date.now() + 60_000),
     });
     const second = await dataAccess.tryInsertProcessing({
       scope: 'payments:create:22222222-2222-4222-8222-222222222222',
       idempotencyKey: 'idem-data-access-scope',
       requestHash: 'hash-1',
+      resource: { type: 'payment', id: '88888888-8888-4888-8888-888888888888' },
+      processingExpiresAt: new Date(Date.now() + 60_000),
     });
 
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
     expect(second?.scope).not.toBe(first?.scope);
+  });
+
+  it('reactivates a failed idempotency record with a fresh processing lease', async () => {
+    const dataAccess = createTestContainer().resolve<IdempotencyDataAccess>(
+      'idempotencyDataAccess',
+    );
+    const newLease = new Date(Date.now() + 60_000);
+
+    await knex('idempotency_keys').insert({
+      id: '99999999-9999-4999-8999-999999999999',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-reactivate-failed',
+      request_hash: 'hash-1',
+      status: 'FAILED',
+      resource_type: 'payment',
+      resource_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+
+    const record = await dataAccess.reactivateFailed(
+      '99999999-9999-4999-8999-999999999999',
+      'hash-1',
+      newLease,
+    );
+
+    expect(record).toMatchObject({
+      status: 'PROCESSING',
+      resource_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    });
+    expect(record?.processing_expires_at).not.toBeNull();
+  });
+
+  it('takes over an expired processing record only once and renews the lease', async () => {
+    const dataAccess = createTestContainer().resolve<IdempotencyDataAccess>(
+      'idempotencyDataAccess',
+    );
+    const idempotencyRecordId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    await knex('idempotency_keys').insert({
+      id: idempotencyRecordId,
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-data-access-expired-processing',
+      request_hash: 'hash-1',
+      status: 'PROCESSING',
+      resource_type: 'payment',
+      resource_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      processing_expires_at: new Date(Date.now() - 1000),
+    });
+
+    const first = await dataAccess.takeoverExpiredProcessing(
+      idempotencyRecordId,
+      'hash-1',
+      new Date(Date.now() + 60_000),
+    );
+    const second = await dataAccess.takeoverExpiredProcessing(
+      idempotencyRecordId,
+      'hash-1',
+      new Date(Date.now() + 60_000),
+    );
+
+    expect(first).toMatchObject({
+      status: 'PROCESSING',
+      resource_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+    });
+    expect(first?.processing_expires_at).not.toBeNull();
+    expect(second).toBeNull();
   });
 
   it('does not create an idempotency record when idempotency-key is missing', async () => {
@@ -208,6 +299,66 @@ describe('Payment Service idempotency integration', () => {
     expect(Number(count[0].count)).toBe(0);
   });
 
+  it('rejects payment create when amountMinor is above the maximum', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-amount-max-rejected')
+      .send({
+        merchantId,
+        amountMinor: AMOUNT_MINOR_MAX + 1,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Validation failed',
+    });
+    expect(response.body.error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'body.amountMinor',
+        }),
+      ]),
+    );
+
+    const count = await knex('idempotency_keys').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(0);
+  });
+
+  it('accepts payment create when amountMinor is exactly the maximum', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-amount-max-accepted')
+      .send({
+        merchantId,
+        amountMinor: AMOUNT_MINOR_MAX,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.amountMinor).toBe(AMOUNT_MINOR_MAX);
+  });
+
+  it('rejects unauthenticated invalid requests before validation and does not create an idempotency record', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('idempotency-key', 'idem-unauthenticated-invalid')
+      .send({
+        merchantId,
+        amountMinor: 10.5,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHORIZED');
+
+    const count = await knex('idempotency_keys').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(0);
+  });
+
   it('returns the same response for the same idempotency key and body without calling provider twice', async () => {
     const provider = createProviderRegistryMock();
     const app = createApp(provider.registry);
@@ -232,6 +383,50 @@ describe('Payment Service idempotency integration', () => {
     expect(second.status).toBe(201);
     expect(second.body).toEqual(first.body);
     expect(provider.authorize).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves cached idempotency response status code on replay', async () => {
+    const body = {
+      merchantId,
+      amountMinor: 1000,
+      currency: 'TRY',
+    };
+    const cachedPayment = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      merchantId,
+      amountMinor: 1000,
+      currency: 'TRY',
+      status: 'AUTHORIZED',
+      provider: 'integration-provider',
+      providerPaymentId: 'provider_payment_1',
+      failureCode: null,
+      failureMessage: null,
+      createdAt: '2026-07-09T10:00:00.000Z',
+    };
+    const provider = createProviderRegistryMock();
+
+    await knex('idempotency_keys').insert({
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-replay-status',
+      request_hash: buildRequestHash(body),
+      status: 'COMPLETED',
+      resource_type: 'payment',
+      resource_id: cachedPayment.id,
+      response_status_code: 202,
+      response_body: cachedPayment,
+      expires_at: new Date(Date.now() + 60_000),
+    });
+
+    const response = await request(createApp(provider.registry))
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-replay-status')
+      .send(body);
+
+    expect(response.status).toBe(202);
+    expect(response.body).toEqual(cachedPayment);
+    expect(provider.authorize).not.toHaveBeenCalled();
   });
 
   it('rejects the same idempotency key with a different request body', async () => {
@@ -274,6 +469,7 @@ describe('Payment Service idempotency integration', () => {
       idempotency_key: 'idem-processing',
       request_hash: buildRequestHash(body),
       status: 'PROCESSING',
+      processing_expires_at: new Date(Date.now() + 60_000),
     });
 
     const response = await request(createApp())
@@ -284,6 +480,42 @@ describe('Payment Service idempotency integration', () => {
 
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('IDEMPOTENCY_REQUEST_IN_PROGRESS');
+  });
+
+  it('takes over an expired processing record and preserves the reserved payment id', async () => {
+    const reservedPaymentId = '33333333-3333-4333-8333-333333333333';
+    const body = {
+      merchantId,
+      amountMinor: 1000,
+      currency: 'TRY',
+    };
+
+    await knex('idempotency_keys').insert({
+      id: '44444444-4444-4444-8444-444444444444',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-expired-processing',
+      request_hash: buildRequestHash(body),
+      status: 'PROCESSING',
+      resource_type: 'payment',
+      resource_id: reservedPaymentId,
+      processing_expires_at: new Date(Date.now() - 1000),
+    });
+
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-expired-processing')
+      .send(body);
+
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBe(reservedPaymentId);
+
+    const record = await knex('idempotency_keys')
+      .where({ idempotency_key: 'idem-expired-processing' })
+      .first();
+    expect(record.status).toBe('COMPLETED');
+    expect(record.resource_id).toBe(reservedPaymentId);
+    expect(record.expires_at).not.toBeNull();
   });
 
   it('allows the same idempotency key for a different merchant scope', async () => {
@@ -313,4 +545,143 @@ describe('Payment Service idempotency integration', () => {
     expect(second.status).toBe(201);
     expect(second.body.id).not.toBe(first.body.id);
   });
+
+  it('sets retention expiry when an unexpected create error marks idempotency failed', async () => {
+    const failingProvider = {
+      getDefaultProvider: jest.fn().mockReturnValue({
+        authorize: jest.fn().mockRejectedValue(new Error('provider unavailable')),
+        capture: jest.fn(),
+      }),
+    };
+
+    const response = await request(createApp(failingProvider))
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-provider-error')
+      .send({
+        merchantId,
+        amountMinor: 1000,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(500);
+
+    const record = await knex('idempotency_keys')
+      .where({ idempotency_key: 'idem-provider-error' })
+      .first();
+    expect(record.status).toBe('FAILED');
+    expect(record.expires_at).not.toBeNull();
+  });
+
+  it('does not expose internal OpenAPI docs unless explicitly enabled', async () => {
+    await request(createApp()).get('/internal-docs.json').expect(404);
+  });
+
+  it('exposes internal OpenAPI docs when explicitly enabled', async () => {
+    const response = await request(createApp(createProviderRegistryMock().registry, {
+      OPENAPI_DOCS_ENABLED: 'true',
+    }))
+      .get('/internal-docs.json')
+      .expect(200);
+
+    expect(response.body.openapi).toMatch(/^3\.0\./);
+    expect(response.body.info).toEqual(expect.objectContaining({
+      title: 'payment-service-test Internal API',
+    }));
+  });
+
+  it('rejects invalid payment values at the database boundary', async () => {
+    await expect(
+      insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'UNKNOWN' }),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      insertPaymentRaw({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', currency: 'GBP' }),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      insertPaymentRaw({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', amount_minor: 0 }),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('allows the full spec payment lifecycle values at the database boundary', async () => {
+    await insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'CREATED' });
+    await insertPaymentRaw({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', status: 'AUTHORIZED' });
+    await insertPaymentRaw({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'CAPTURED' });
+    await insertPaymentRaw({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', status: 'FAILED' });
+    await insertPaymentRaw({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', status: 'CAPTURE_FAILED' });
+
+    const count = await knex('payments').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(5);
+  });
+
+  it('rejects invalid idempotency statuses at the database boundary', async () => {
+    await expect(
+      knex('idempotency_keys').insert({
+        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        scope: `payments:create:${merchantId}`,
+        idempotency_key: 'idem-invalid-status',
+        request_hash: 'hash-1',
+        status: 'UNKNOWN',
+      }),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('updates payments updated_at through the database trigger', async () => {
+    await insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    const before = await knex('payments')
+      .where({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+      .first();
+
+    await wait(10);
+    await knex.raw('UPDATE payments SET provider_payment_id = ? WHERE id = ?', [
+      'provider_payment_updated',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    ]);
+
+    const after = await knex('payments')
+      .where({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+      .first();
+    expect(new Date(after.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.updated_at).getTime(),
+    );
+  });
+
+  it('updates idempotency updated_at through the database trigger', async () => {
+    await knex('idempotency_keys').insert({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-trigger-updated-at',
+      request_hash: 'hash-1',
+      status: 'PROCESSING',
+    });
+    const before = await knex('idempotency_keys')
+      .where({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+      .first();
+
+    await wait(10);
+    await knex.raw('UPDATE idempotency_keys SET status = ? WHERE id = ?', [
+      'FAILED',
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    ]);
+
+    const after = await knex('idempotency_keys')
+      .where({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+      .first();
+    expect(new Date(after.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.updated_at).getTime(),
+    );
+  });
+
+  function insertPaymentRaw(overrides: Record<string, unknown> = {}) {
+    return knex('payments').insert({
+      id: overrides.id ?? '99999999-9999-4999-8999-999999999999',
+      merchant_id: merchantId,
+      amount_minor: overrides.amount_minor ?? 1000,
+      currency: overrides.currency ?? 'TRY',
+      status: overrides.status ?? 'AUTHORIZED',
+      provider: 'integration-provider',
+      provider_payment_id: null,
+      failure_code: null,
+      failure_message: null,
+    });
+  }
 });

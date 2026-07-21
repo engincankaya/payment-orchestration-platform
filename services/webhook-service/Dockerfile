@@ -14,7 +14,7 @@ COPY services/webhook-service/tsconfig.json ./services/webhook-service/tsconfig.
 COPY services/webhook-service/src ./services/webhook-service/src
 
 RUN npm run build --workspace @payment-orchestration-platform/openapi-kit
-RUN npm run build --workspace @paybridge/webhook-service
+RUN npm run build --workspace @payment-orchestration-platform/webhook-service
 
 WORKDIR /app/services/webhook-service
 

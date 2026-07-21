@@ -20,7 +20,7 @@ export default class PaymentsController {
         currency: req.body.currency,
       });
 
-      return res.status(201).json(result);
+      return res.status(result.statusCode).json(result.body);
     } catch (error) {
       return next(error);
     }
