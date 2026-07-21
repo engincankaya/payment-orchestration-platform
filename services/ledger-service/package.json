@@ -1,5 +1,5 @@
 {
-  "name": "@paybridge/ledger-service",
+  "name": "@payment-orchestration-platform/ledger-service",
   "private": true,
   "version": "0.1.0",
   "scripts": {

@@ -1,5 +1,5 @@
 {
-  "name": "@paybridge/api-gateway",
+  "name": "@payment-orchestration-platform/api-gateway",
   "private": true,
   "version": "0.1.0",
   "scripts": {

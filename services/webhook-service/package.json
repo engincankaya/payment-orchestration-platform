@@ -1,5 +1,5 @@
 {
-  "name": "@paybridge/webhook-service",
+  "name": "@payment-orchestration-platform/webhook-service",
   "private": true,
   "version": "0.1.0",
   "scripts": {
