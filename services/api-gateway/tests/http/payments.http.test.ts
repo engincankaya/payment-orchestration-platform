@@ -2,6 +2,7 @@ import { asValue } from 'awilix';
 import request from 'supertest';
 
 import { buildContainer } from '../../src/bootstrap/container';
+import { AMOUNT_MINOR_MAX } from '../../src/server/routes/payments/payments';
 import ServerApplication from '../../src/server/server';
 
 const TEST_ENV = {
@@ -107,6 +108,75 @@ describe('API Gateway HTTP', () => {
           path: expect.stringMatching(/^body\./),
         }),
       ]),
+    );
+  });
+
+  it('rejects payment create when amountMinor is above the maximum', async () => {
+    const fetchFn = jest.fn();
+    const response = await request(createTestServer(fetchFn))
+      .post('/api/v1/payments')
+      .set('x-api-key', TEST_ENV.PUBLIC_API_KEY)
+      .set('idempotency-key', 'idem-key-1')
+      .send({
+        merchantId: '0bc5c3bf-3b17-444e-9d92-f3fcb03f1d82',
+        amountMinor: AMOUNT_MINOR_MAX + 1,
+        currency: 'TRY',
+      })
+      .expect(400);
+
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Validation failed',
+    });
+    expect(response.body.error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'body.amountMinor',
+        }),
+      ]),
+    );
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('accepts payment create when amountMinor is exactly the maximum', async () => {
+    const paymentResponse = {
+      id: '9cfd22b0-c416-45a5-8f93-ed066ac3c3cf',
+      merchantId: '0bc5c3bf-3b17-444e-9d92-f3fcb03f1d82',
+      amountMinor: AMOUNT_MINOR_MAX,
+      currency: 'TRY',
+      status: 'AUTHORIZED',
+      provider: 'mock-provider',
+      providerPaymentId: 'provider-payment-1',
+      failureCode: null,
+      failureMessage: null,
+      createdAt: '2026-07-09T10:00:00.000Z',
+    };
+    const fetchFn = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: jest.fn().mockResolvedValue(paymentResponse),
+    });
+
+    await request(createTestServer(fetchFn))
+      .post('/api/v1/payments')
+      .set('x-api-key', TEST_ENV.PUBLIC_API_KEY)
+      .set('idempotency-key', 'idem-key-1')
+      .send({
+        merchantId: paymentResponse.merchantId,
+        amountMinor: AMOUNT_MINOR_MAX,
+        currency: paymentResponse.currency,
+      })
+      .expect(201);
+
+    expect(fetchFn).toHaveBeenCalledWith(
+      'http://payment-service.test/internal/payments',
+      expect.objectContaining({
+        body: JSON.stringify({
+          merchantId: paymentResponse.merchantId,
+          amountMinor: AMOUNT_MINOR_MAX,
+          currency: paymentResponse.currency,
+        }),
+      }),
     );
   });
 

@@ -9,7 +9,9 @@ import { buildContainer } from '../../src/bootstrap/container';
 import * as createPaymentsMigration from '../../src/bootstrap/knex/migrations/001_create_payments';
 import * as createIdempotencyKeysMigration from '../../src/bootstrap/knex/migrations/002_create_idempotency_keys';
 import * as addIdempotencyLeaseMetadata from '../../src/bootstrap/knex/migrations/003_add_idempotency_lease_metadata';
+import * as hardenPaymentIntegrity from '../../src/bootstrap/knex/migrations/004_harden_payment_integrity';
 import IdempotencyDataAccess from '../../src/data-access/idempotency/idempotency-data-access';
+import { AMOUNT_MINOR_MAX } from '../../src/server/routes/payments/payments';
 import ServerApplication from '../../src/server/server';
 
 const internalToken = 'test-internal-token';
@@ -59,6 +61,12 @@ function buildRequestHash(body: unknown) {
   return createHash('sha256').update(JSON.stringify(canonicalize(body))).digest('hex');
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function createProviderRegistryMock() {
   const authorize = jest.fn().mockImplementation(async (input) => ({
     success: input.amountMinor !== 9999,
@@ -101,6 +109,7 @@ describe('Payment Service idempotency integration', () => {
     await createPaymentsMigration.up(knex);
     await createIdempotencyKeysMigration.up(knex);
     await addIdempotencyLeaseMetadata.up(knex);
+    await hardenPaymentIntegrity.up(knex);
   }, 120_000);
 
   afterAll(async () => {
@@ -288,6 +297,49 @@ describe('Payment Service idempotency integration', () => {
 
     const count = await knex('idempotency_keys').count<{ count: string }[]>('* as count');
     expect(Number(count[0].count)).toBe(0);
+  });
+
+  it('rejects payment create when amountMinor is above the maximum', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-amount-max-rejected')
+      .send({
+        merchantId,
+        amountMinor: AMOUNT_MINOR_MAX + 1,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION_ERROR',
+      message: 'Validation failed',
+    });
+    expect(response.body.error.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'body.amountMinor',
+        }),
+      ]),
+    );
+
+    const count = await knex('idempotency_keys').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(0);
+  });
+
+  it('accepts payment create when amountMinor is exactly the maximum', async () => {
+    const response = await request(createApp())
+      .post('/internal/payments')
+      .set('x-internal-token', internalToken)
+      .set('idempotency-key', 'idem-amount-max-accepted')
+      .send({
+        merchantId,
+        amountMinor: AMOUNT_MINOR_MAX,
+        currency: 'TRY',
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.amountMinor).toBe(AMOUNT_MINOR_MAX);
   });
 
   it('rejects unauthenticated invalid requests before validation and does not create an idempotency record', async () => {
@@ -537,4 +589,99 @@ describe('Payment Service idempotency integration', () => {
       title: 'payment-service-test Internal API',
     }));
   });
+
+  it('rejects invalid payment values at the database boundary', async () => {
+    await expect(
+      insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'UNKNOWN' }),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      insertPaymentRaw({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', currency: 'GBP' }),
+    ).rejects.toMatchObject({ code: '23514' });
+    await expect(
+      insertPaymentRaw({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', amount_minor: 0 }),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('allows the full spec payment lifecycle values at the database boundary', async () => {
+    await insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', status: 'CREATED' });
+    await insertPaymentRaw({ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', status: 'AUTHORIZED' });
+    await insertPaymentRaw({ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', status: 'CAPTURED' });
+    await insertPaymentRaw({ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', status: 'FAILED' });
+    await insertPaymentRaw({ id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', status: 'CAPTURE_FAILED' });
+
+    const count = await knex('payments').count<{ count: string }[]>('* as count');
+    expect(Number(count[0].count)).toBe(5);
+  });
+
+  it('rejects invalid idempotency statuses at the database boundary', async () => {
+    await expect(
+      knex('idempotency_keys').insert({
+        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        scope: `payments:create:${merchantId}`,
+        idempotency_key: 'idem-invalid-status',
+        request_hash: 'hash-1',
+        status: 'UNKNOWN',
+      }),
+    ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('updates payments updated_at through the database trigger', async () => {
+    await insertPaymentRaw({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+    const before = await knex('payments')
+      .where({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+      .first();
+
+    await wait(10);
+    await knex.raw('UPDATE payments SET provider_payment_id = ? WHERE id = ?', [
+      'provider_payment_updated',
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    ]);
+
+    const after = await knex('payments')
+      .where({ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' })
+      .first();
+    expect(new Date(after.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.updated_at).getTime(),
+    );
+  });
+
+  it('updates idempotency updated_at through the database trigger', async () => {
+    await knex('idempotency_keys').insert({
+      id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-trigger-updated-at',
+      request_hash: 'hash-1',
+      status: 'PROCESSING',
+    });
+    const before = await knex('idempotency_keys')
+      .where({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+      .first();
+
+    await wait(10);
+    await knex.raw('UPDATE idempotency_keys SET status = ? WHERE id = ?', [
+      'FAILED',
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+    ]);
+
+    const after = await knex('idempotency_keys')
+      .where({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
+      .first();
+    expect(new Date(after.updated_at).getTime()).toBeGreaterThan(
+      new Date(before.updated_at).getTime(),
+    );
+  });
+
+  function insertPaymentRaw(overrides: Record<string, unknown> = {}) {
+    return knex('payments').insert({
+      id: overrides.id ?? '99999999-9999-4999-8999-999999999999',
+      merchant_id: merchantId,
+      amount_minor: overrides.amount_minor ?? 1000,
+      currency: overrides.currency ?? 'TRY',
+      status: overrides.status ?? 'AUTHORIZED',
+      provider: 'integration-provider',
+      provider_payment_id: null,
+      failure_code: null,
+      failure_message: null,
+    });
+  }
 });

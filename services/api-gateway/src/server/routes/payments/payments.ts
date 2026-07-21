@@ -4,6 +4,7 @@ import { IRouteSettings } from '@payment-orchestration-platform/openapi-kit';
 import { BASE_API_PATH } from '../../../constants';
 
 const BASE_ROUTE = `${BASE_API_PATH}/payments`;
+export const AMOUNT_MINOR_MAX = 1_000_000_000_000;
 
 const paymentResponseSchema = {
   type: 'object',
@@ -63,7 +64,7 @@ export const PaymentRoutes: IRouteSettings[] = [
         }).unknown(true),
         body: Joi.object({
           merchantId: Joi.string().uuid().required(),
-          amountMinor: Joi.number().integer().positive().required(),
+          amountMinor: Joi.number().integer().positive().max(AMOUNT_MINOR_MAX).required(),
           currency: Joi.string().valid('TRY', 'USD', 'EUR').required(),
         }),
       },
