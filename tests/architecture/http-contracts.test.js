@@ -175,7 +175,18 @@ test('server applications expose OpenAPI docs through setupOpenApi', () => {
 
     assert.match(server, /setupOpenApi/);
     assert.match(server, /setupSwagger/);
+    assert.match(server, /OPENAPI_DOCS_ENABLED/);
     assert.match(server, /routes:\s*Routes/);
+  }
+});
+
+test('server applications gate CORS with an explicit origin whitelist', () => {
+  for (const serviceName of serviceNames) {
+    const server = read(`services/${serviceName}/src/server/server.ts`);
+
+    assert.doesNotMatch(server, /cors\(\{\s*origin:\s*['"]\*['"]/);
+    assert.match(server, /CORS_ALLOWED_ORIGINS/);
+    assert.match(server, /parseAllowedOrigins/);
   }
 });
 

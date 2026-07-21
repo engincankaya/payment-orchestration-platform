@@ -112,11 +112,15 @@ describe('Payment Service idempotency integration', () => {
     await truncateTables(knex);
   });
 
-  function createTestContainer(providerRegistryService = createProviderRegistryMock().registry) {
+  function createTestContainer(
+    providerRegistryService = createProviderRegistryMock().registry,
+    env: NodeJS.ProcessEnv = {},
+  ) {
     return buildContainer({
       env: asValue({
         INTERNAL_SERVICE_TOKEN: internalToken,
         SERVICE_NAME: 'payment-service-test',
+        ...env,
       }),
       knex: asValue(knex),
       logger: asValue(silentLogger),
@@ -124,8 +128,11 @@ describe('Payment Service idempotency integration', () => {
     });
   }
 
-  function createApp(providerRegistryService = createProviderRegistryMock().registry) {
-    const container = createTestContainer(providerRegistryService);
+  function createApp(
+    providerRegistryService = createProviderRegistryMock().registry,
+    env: NodeJS.ProcessEnv = {},
+  ) {
+    const container = createTestContainer(providerRegistryService, env);
 
     return container.resolve<ServerApplication>('server').app;
   }
@@ -512,5 +519,22 @@ describe('Payment Service idempotency integration', () => {
       .first();
     expect(record.status).toBe('FAILED');
     expect(record.expires_at).not.toBeNull();
+  });
+
+  it('does not expose internal OpenAPI docs unless explicitly enabled', async () => {
+    await request(createApp()).get('/internal-docs.json').expect(404);
+  });
+
+  it('exposes internal OpenAPI docs when explicitly enabled', async () => {
+    const response = await request(createApp(createProviderRegistryMock().registry, {
+      OPENAPI_DOCS_ENABLED: 'true',
+    }))
+      .get('/internal-docs.json')
+      .expect(200);
+
+    expect(response.body.openapi).toMatch(/^3\.0\./);
+    expect(response.body.info).toEqual(expect.objectContaining({
+      title: 'payment-service-test Internal API',
+    }));
   });
 });

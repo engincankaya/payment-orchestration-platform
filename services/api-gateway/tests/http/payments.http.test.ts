@@ -11,9 +11,9 @@ const TEST_ENV = {
   PAYMENT_SERVICE_BASE_URL: 'http://payment-service.test',
 };
 
-function createTestServer(fetchFn: jest.Mock = jest.fn()) {
+function createTestServer(fetchFn: jest.Mock = jest.fn(), env: NodeJS.ProcessEnv = {}) {
   const container = buildContainer({
-    env: asValue(TEST_ENV),
+    env: asValue({ ...TEST_ENV, ...env }),
     fetchFn: asValue(fetchFn),
   });
 
@@ -26,6 +26,50 @@ describe('API Gateway HTTP', () => {
 
     expect(response.headers['x-correlation-id']).toEqual(expect.any(String));
     expect(response.body).toMatchObject({ status: 'ok' });
+  });
+
+  it('does not expose OpenAPI docs unless explicitly enabled', async () => {
+    await request(createTestServer()).get('/api-docs.json').expect(404);
+  });
+
+  it('exposes OpenAPI docs when explicitly enabled', async () => {
+    const response = await request(createTestServer(jest.fn(), {
+      OPENAPI_DOCS_ENABLED: 'true',
+    }))
+      .get('/api-docs.json')
+      .expect(200);
+
+    expect(response.body.openapi).toMatch(/^3\.0\./);
+    expect(response.body.info).toEqual(expect.objectContaining({
+      title: 'api-gateway API',
+    }));
+  });
+
+  it('does not emit CORS allow-origin when no origin whitelist is configured', async () => {
+    const response = await request(createTestServer())
+      .get('/health')
+      .set('Origin', 'https://merchant.example')
+      .expect(200);
+
+    expect(response.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('allows whitelisted CORS origins only', async () => {
+    const app = createTestServer(jest.fn(), {
+      CORS_ALLOWED_ORIGINS: 'https://merchant.example, https://admin.example',
+    });
+
+    const allowed = await request(app)
+      .get('/health')
+      .set('Origin', 'https://merchant.example')
+      .expect(200);
+    const denied = await request(app)
+      .get('/health')
+      .set('Origin', 'https://unknown.example')
+      .expect(200);
+
+    expect(allowed.headers['access-control-allow-origin']).toBe('https://merchant.example');
+    expect(denied.headers['access-control-allow-origin']).toBeUndefined();
   });
 
   it('rejects unauthenticated payment create before request validation', async () => {
