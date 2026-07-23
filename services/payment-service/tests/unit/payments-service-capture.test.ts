@@ -118,6 +118,7 @@ const makePaymentStateServiceMock = (
 const makeOutboxServiceMock = (
   overrides: Partial<jest.Mocked<OutboxServicePort>> = {},
 ): jest.Mocked<OutboxServicePort> => ({
+  recordPaymentAuthorized: jest.fn().mockResolvedValue(undefined),
   recordPaymentCaptured: jest.fn().mockResolvedValue(undefined),
   recordPaymentFailed: jest.fn().mockResolvedValue(undefined),
   ...overrides,

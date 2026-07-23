@@ -29,6 +29,13 @@ export type PaymentStateServicePort = Pick<
 >;
 
 export interface OutboxServicePort {
+  recordPaymentAuthorized(
+    input: {
+      correlationId: string;
+      payment: PaymentRecord;
+    },
+    trx: TransactionContext,
+  ): Promise<unknown>;
   recordPaymentCaptured(
     input: {
       correlationId: string;
@@ -91,8 +98,8 @@ export default class PaymentsService {
   private paymentsDataAccess: PaymentsDataAccessPort;
   private idempotencyService: IdempotencyServicePort;
   private providerRegistryService: ProviderRegistryServicePort;
-  private paymentStateService?: PaymentStateServicePort;
-  private outboxService?: OutboxServicePort;
+  private paymentStateService: PaymentStateServicePort;
+  private outboxService: OutboxServicePort;
   private transactionManager: TransactionManagerPort;
   private logger: Logger;
 
@@ -100,8 +107,8 @@ export default class PaymentsService {
     paymentsDataAccess: PaymentsDataAccessPort;
     idempotencyService: IdempotencyServicePort;
     providerRegistryService: ProviderRegistryServicePort;
-    paymentStateService?: PaymentStateServicePort;
-    outboxService?: OutboxServicePort;
+    paymentStateService: PaymentStateServicePort;
+    outboxService: OutboxServicePort;
     transactionManager: TransactionManagerPort;
     logger: Logger;
   }) {
@@ -152,6 +159,8 @@ export default class PaymentsService {
       const now = new Date();
       const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
 
+      this.paymentStateService.ensureTransition(PaymentStatus.CREATED, status);
+
       const body = await this.transactionManager.run(async (trx) => {
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
@@ -166,6 +175,20 @@ export default class PaymentsService {
           authorized_at: authorization.success ? now : null,
           failed_at: authorization.success ? null : now,
         }, trx);
+
+        if (authorization.success) {
+          await this.outboxService.recordPaymentAuthorized({
+            correlationId: command.correlationId,
+            payment,
+          }, trx);
+        } else {
+          await this.outboxService.recordPaymentFailed({
+            correlationId: command.correlationId,
+            operation: 'AUTHORIZE',
+            payment,
+          }, trx);
+        }
+
         const responseBody = this.toDto(payment);
 
         await this.idempotencyService.markCompleted({
@@ -227,7 +250,6 @@ export default class PaymentsService {
     }
 
     try {
-      const { outboxService, paymentStateService } = this.getCaptureDependencies();
       const body = await this.transactionManager.run(async (trx) => {
         const payment = await this.paymentsDataAccess.findByIdForUpdate(command.paymentId, trx);
 
@@ -239,7 +261,7 @@ export default class PaymentsService {
           });
         }
 
-        paymentStateService.ensureCanCapture(payment);
+        this.paymentStateService.ensureCanCapture(payment);
 
         const provider = this.providerRegistryService.getProvider(payment.provider);
 
@@ -263,7 +285,7 @@ export default class PaymentsService {
           ? PaymentStatus.CAPTURED
           : PaymentStatus.CAPTURE_FAILED;
 
-        paymentStateService.ensureTransition(PaymentStatus.AUTHORIZED, targetStatus);
+        this.paymentStateService.ensureTransition(PaymentStatus.AUTHORIZED, targetStatus);
 
         const updatedPayment = await this.paymentsDataAccess.updateStatusIfAuthorized({
           id: payment.id,
@@ -283,12 +305,12 @@ export default class PaymentsService {
         }
 
         if (captureResult.success) {
-          await outboxService.recordPaymentCaptured({
+          await this.outboxService.recordPaymentCaptured({
             correlationId: command.correlationId,
             payment: updatedPayment,
           }, trx);
         } else {
-          await outboxService.recordPaymentFailed({
+          await this.outboxService.recordPaymentFailed({
             correlationId: command.correlationId,
             operation: 'CAPTURE',
             payment: updatedPayment,
@@ -360,22 +382,6 @@ export default class PaymentsService {
       failureCode: payment.failure_code,
       failureMessage: payment.failure_message,
       createdAt: new Date(payment.created_at).toISOString(),
-    };
-  }
-
-  private getCaptureDependencies() {
-    if (!this.paymentStateService || !this.outboxService) {
-      throw new ApiError({
-        code: 'CAPTURE_DEPENDENCIES_NOT_CONFIGURED',
-        message: 'Capture dependencies are not configured',
-        statusCode: 500,
-        isOperational: false,
-      });
-    }
-
-    return {
-      outboxService: this.outboxService,
-      paymentStateService: this.paymentStateService,
     };
   }
 
