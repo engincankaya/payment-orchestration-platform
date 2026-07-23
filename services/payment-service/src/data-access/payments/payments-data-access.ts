@@ -57,10 +57,12 @@ export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
     return this.query(trx).where({ id }).first();
   };
 
+  /** Reads and locks a payment row within the provided transaction. */
   public findByIdForUpdate = async (id: string, trx: TransactionContext) => {
     return this.query(trx).where({ id }).forUpdate().first();
   };
 
+  /** Updates a payment only while its current status is AUTHORIZED. */
   public updateStatusIfAuthorized = async (
     input: UpdateAuthorizedPaymentStatusInput,
     trx: TransactionContext,

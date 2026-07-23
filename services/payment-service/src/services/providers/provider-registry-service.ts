@@ -13,11 +13,12 @@ export default class ProviderRegistryService {
     ]);
   }
 
-  // Provider selection belongs here; PayTR/Iyzico/Stripe adapters should not leak into payment flows.
+  /** Returns the provider configured for new payment authorizations. */
   public getDefaultProvider = (): PaymentProvider => {
     return this.mockPaymentProvider;
   };
 
+  /** Returns the named provider or fails when it is not configured. */
   public getProvider = (name: string): PaymentProvider => {
     const provider = this.providers.get(name);
 

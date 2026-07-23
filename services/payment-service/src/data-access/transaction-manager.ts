@@ -3,6 +3,7 @@ import type { Knex } from 'knex';
 export type TransactionContext = Knex.Transaction;
 
 export interface TransactionManagerPort {
+  /** Runs the handler within a database transaction. */
   run<T>(handler: (trx: TransactionContext) => Promise<T>): Promise<T>;
 }
 

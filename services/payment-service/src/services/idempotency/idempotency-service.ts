@@ -46,11 +46,13 @@ export default class IdempotencyService {
     );
   }
 
+  /** Builds a deterministic hash for an idempotent request payload. */
   public buildRequestHash = (body: unknown) => {
     const canonicalBody = JSON.stringify(this.canonicalize(body));
     return createHash('sha256').update(canonicalBody).digest('hex');
   };
 
+  /** Returns a replayable result or acquires ownership of an idempotent operation. */
   public getExistingOrStart = async (input: {
     scope: string;
     idempotencyKey: string;
@@ -97,6 +99,7 @@ export default class IdempotencyService {
     return this.decideFromExisting(recordAfterConflict, input.requestHash);
   };
 
+  /** Completes an owned idempotency record using its processing token. */
   public markCompleted = async (input: {
     idempotencyRecordId: string;
     responseStatusCode: number;
@@ -123,6 +126,7 @@ export default class IdempotencyService {
     return record;
   };
 
+  /** Fails an owned idempotency record using its processing token. */
   public markFailed = async (input: {
     idempotencyRecordId: string;
     processingToken: string;

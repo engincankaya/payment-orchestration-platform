@@ -57,6 +57,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       .first();
   };
 
+  /** Inserts a processing record when the idempotency key is unclaimed. */
   public tryInsertProcessing = async (
     input: TryInsertProcessingInput,
     trx?: TransactionContext,
@@ -81,6 +82,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Reactivates a failed record with a new processing lease and token. */
   public reactivateFailed = async (
     id: string,
     requestHash: string,
@@ -105,6 +107,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Takes ownership of an expired processing record with a new token. */
   public takeoverExpiredProcessing = async (
     id: string,
     requestHash: string,
@@ -129,6 +132,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Completes a processing record only when its ownership token matches. */
   public markCompleted = async (
     input: {
       id: string;
@@ -161,6 +165,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Fails a processing record only when its ownership token matches. */
   public markFailed = async (
     input: {
       id: string;

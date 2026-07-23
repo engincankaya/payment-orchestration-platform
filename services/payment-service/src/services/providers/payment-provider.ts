@@ -29,10 +29,12 @@ export interface CapturePaymentResult {
 
 // External gateways are adapted to this contract before they are used by payment orchestration.
 export interface PaymentAuthorizer {
+  /** Authorizes a payment with the provider. */
   authorize(input: AuthorizePaymentInput): Promise<AuthorizePaymentResult>;
 }
 
 export interface PaymentCapturer {
+  /** Captures a previously authorized payment with the provider. */
   capture(input: CapturePaymentInput): Promise<CapturePaymentResult>;
 }
 

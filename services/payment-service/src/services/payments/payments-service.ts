@@ -29,6 +29,7 @@ export type PaymentStateServicePort = Pick<
 >;
 
 export interface OutboxServicePort {
+  /** Records a payment-authorized event in the provided transaction. */
   recordPaymentAuthorized(
     input: {
       correlationId: string;
@@ -36,6 +37,7 @@ export interface OutboxServicePort {
     },
     trx: TransactionContext,
   ): Promise<unknown>;
+  /** Records a payment-captured event in the provided transaction. */
   recordPaymentCaptured(
     input: {
       correlationId: string;
@@ -43,6 +45,7 @@ export interface OutboxServicePort {
     },
     trx: TransactionContext,
   ): Promise<unknown>;
+  /** Records a payment-failed event in the provided transaction. */
   recordPaymentFailed(
     input: {
       correlationId: string;
@@ -121,6 +124,7 @@ export default class PaymentsService {
     this.logger = deps.logger;
   }
 
+  /** Authorizes and persists a payment with idempotency protection. */
   public create = async (command: CreatePaymentCommand): Promise<CreatePaymentResult> => {
     const requestHash = this.idempotencyService.buildRequestHash({
       merchantId: command.merchantId,
@@ -162,6 +166,7 @@ export default class PaymentsService {
       this.paymentStateService.ensureTransition(PaymentStatus.CREATED, status);
 
       const body = await this.transactionManager.run(async (trx) => {
+        // Payment, outbox, and idempotency completion share one atomic commit boundary.
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
           merchant_id: command.merchantId,
@@ -228,6 +233,7 @@ export default class PaymentsService {
     }
   };
 
+  /** Captures an authorized payment with outbox and idempotency protection. */
   public capture = async (command: CapturePaymentCommand): Promise<CapturePaymentResult> => {
     const requestHash = this.idempotencyService.buildRequestHash({
       paymentId: command.paymentId,
@@ -263,6 +269,7 @@ export default class PaymentsService {
 
         this.paymentStateService.ensureCanCapture(payment);
 
+        // Keep the row lock through the provider call to prevent concurrent double capture.
         const provider = this.providerRegistryService.getProvider(payment.provider);
 
         if (!payment.provider_payment_id) {
@@ -356,6 +363,7 @@ export default class PaymentsService {
     }
   };
 
+  /** Returns a payment by its identifier. */
   public getById = async (query: GetPaymentQuery): Promise<PaymentDto> => {
     const payment = await this.paymentsDataAccess.findById(query.paymentId);
 

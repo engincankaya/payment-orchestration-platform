@@ -19,6 +19,7 @@ const allowedTransitions: Record<PaymentStatusValue, readonly PaymentStatusValue
 };
 
 export default class PaymentStateService {
+  /** Ensures that a payment status transition is allowed. */
   public ensureTransition = (
     currentStatus: PaymentStatusValue,
     targetStatus: PaymentStatusValue,
@@ -34,6 +35,7 @@ export default class PaymentStateService {
     });
   };
 
+  /** Ensures that a payment is currently eligible for capture. */
   public ensureCanCapture = (payment: { status: string }): void => {
     if (payment.status === PaymentStatus.AUTHORIZED) {
       return;
