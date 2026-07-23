@@ -11,6 +11,11 @@ const serviceNames = [
   'ledger-service',
   'webhook-service',
 ];
+const databaseOwnerServiceNames = [
+  'payment-service',
+  'ledger-service',
+  'webhook-service',
+];
 
 const commonArchitectureFiles = [
   'src/bootstrap/container.ts',
@@ -33,6 +38,21 @@ function readServiceFile(serviceName, relativePath) {
 
 function serviceFileExists(serviceName, relativePath) {
   return fs.existsSync(path.join(servicesDir, serviceName, relativePath));
+}
+
+function readTypeScriptSources(directoryPath) {
+  return fs
+    .readdirSync(directoryPath, { withFileTypes: true })
+    .flatMap((entry) => {
+      const entryPath = path.join(directoryPath, entry.name);
+
+      if (entry.isDirectory()) {
+        return readTypeScriptSources(entryPath);
+      }
+
+      return entry.name.endsWith('.ts') ? [fs.readFileSync(entryPath, 'utf8')] : [];
+    })
+    .join('\n');
 }
 
 test('each service owns a local copy of the common service architecture files', () => {
@@ -86,6 +106,38 @@ test('containers use Awilix proxy injection and enforce required lifetimes', () 
     assert.match(containerSource, /container\.register\(overrides\)/);
     assert.match(containerSource, /export default buildContainer\(\)/);
   }
+});
+
+test('database-owning services keep transaction management local and explicit', () => {
+  for (const serviceName of databaseOwnerServiceNames) {
+    const transactionManagerPath = 'src/data-access/transaction-manager.ts';
+    const containerSource = readServiceFile(serviceName, 'src/bootstrap/container.ts');
+    const baseDataAccessSource = readServiceFile(
+      serviceName,
+      'src/data-access/base-data-access.ts',
+    );
+    const transactionManagerSource = readServiceFile(serviceName, transactionManagerPath);
+    const dataAccessDirectory = path.join(servicesDir, serviceName, 'src/data-access');
+    const dataAccessSources = readTypeScriptSources(dataAccessDirectory);
+
+    assert.equal(serviceFileExists(serviceName, transactionManagerPath), true);
+    assert.match(containerSource, /\.\.\/data-access\/\*\*\/\*\.\{ts,js\}/);
+    assert.doesNotMatch(containerSource, /asClass\(TransactionManager\)/);
+    assert.match(baseDataAccessSource, /query\(trx\?:\s*TransactionContext\)/);
+    assert.match(transactionManagerSource, /type TransactionContext = Knex\.Transaction/);
+    assert.match(transactionManagerSource, /interface TransactionManagerPort/);
+    assert.match(
+      transactionManagerSource,
+      /export default class TransactionManager implements TransactionManagerPort/,
+    );
+    assert.match(transactionManagerSource, /this\.knex\.transaction\(handler\)/);
+    assert.doesNotMatch(dataAccessSources, /withTransaction/);
+  }
+
+  assert.equal(
+    serviceFileExists('api-gateway', 'src/data-access/transaction-manager.ts'),
+    false,
+  );
 });
 
 test('server application registers middleware, routes, error handling and health in order', () => {

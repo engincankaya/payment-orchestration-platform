@@ -1,10 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
-import { Knex } from 'knex';
 
 import IdempotencyDataAccess, {
   IdempotencyRecord,
   IdempotencyStatus,
 } from '../../data-access/idempotency/idempotency-data-access';
+import type { TransactionContext } from '../../data-access/transaction-manager';
 import ApiError from '../../types/errors/api-error';
 
 export type IdempotencyDataAccessPort = Pick<
@@ -104,7 +104,7 @@ export default class IdempotencyService {
     resourceType: string;
     resourceId: string;
     processingToken: string;
-    trx?: Knex.Transaction;
+    trx?: TransactionContext;
   }) => {
     const record = await this.idempotencyDataAccess.markCompleted({
       id: input.idempotencyRecordId,
@@ -126,7 +126,7 @@ export default class IdempotencyService {
   public markFailed = async (input: {
     idempotencyRecordId: string;
     processingToken: string;
-    trx?: Knex.Transaction;
+    trx?: TransactionContext;
   }) => {
     const record = await this.idempotencyDataAccess.markFailed(
       {

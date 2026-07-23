@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
-import { Knex } from 'knex';
+import type { Knex } from 'knex';
 
 import BaseDataAccess from '../base-data-access';
+import type { TransactionContext } from '../transaction-manager';
 
 export const IdempotencyStatus = {
   PROCESSING: 'PROCESSING',
@@ -49,7 +50,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
   public findByScopeAndKey = async (
     scope: string,
     idempotencyKey: string,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     return this.query(trx)
       .where({ scope, idempotency_key: idempotencyKey })
@@ -58,7 +59,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
 
   public tryInsertProcessing = async (
     input: TryInsertProcessingInput,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .insert({
@@ -85,7 +86,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     requestHash: string,
     processingExpiresAt: Date,
     processingToken: string,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({
@@ -109,7 +110,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     requestHash: string,
     processingExpiresAt: Date,
     processingToken: string,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({
@@ -138,7 +139,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       expiresAt: Date;
       processingToken: string;
     },
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({
@@ -166,7 +167,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       expiresAt: Date;
       processingToken: string;
     },
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({

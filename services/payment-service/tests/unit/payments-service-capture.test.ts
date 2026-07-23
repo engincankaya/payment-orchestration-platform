@@ -1,4 +1,8 @@
 import type { PaymentRecord } from '../../src/data-access/payments/payments-data-access';
+import type {
+  TransactionContext,
+  TransactionManagerPort,
+} from '../../src/data-access/transaction-manager';
 import PaymentsService from '../../src/services/payments/payments-service';
 import type {
   IdempotencyServicePort,
@@ -10,7 +14,7 @@ import type {
 import ApiError from '../../src/types/errors/api-error';
 import type { Logger } from '../../src/utils/logger';
 
-const trx = { id: 'capture-trx' };
+const trx = { id: 'capture-trx' } as unknown as TransactionContext;
 const processingToken = '11111111-1111-4111-8111-111111111111';
 
 const authorizedPayment: PaymentRecord = {
@@ -68,7 +72,15 @@ const makePaymentsDataAccessMock = (
   findById: jest.fn(),
   findByIdForUpdate: jest.fn().mockResolvedValue(authorizedPayment),
   updateStatusIfAuthorized: jest.fn().mockResolvedValue(capturedPayment),
-  withTransaction: jest.fn().mockImplementation((handler) => handler(trx)),
+  ...overrides,
+});
+
+const makeTransactionManagerMock = (
+  overrides: Partial<jest.Mocked<TransactionManagerPort>> = {},
+): jest.Mocked<TransactionManagerPort> => ({
+  run: jest.fn().mockImplementation(
+    async <T>(handler: (transaction: TransactionContext) => Promise<T>) => handler(trx),
+  ),
   ...overrides,
 });
 
@@ -123,6 +135,7 @@ const makeService = (deps: {
   providerRegistryService?: jest.Mocked<ProviderRegistryServicePort>;
   paymentStateService?: jest.Mocked<PaymentStateServicePort>;
   outboxService?: jest.Mocked<OutboxServicePort>;
+  transactionManager?: jest.Mocked<TransactionManagerPort>;
   logger?: jest.Mocked<Logger>;
 } = {}) => {
   const resolved = {
@@ -131,6 +144,7 @@ const makeService = (deps: {
     providerRegistryService: deps.providerRegistryService ?? makeProviderRegistryMock(),
     paymentStateService: deps.paymentStateService ?? makePaymentStateServiceMock(),
     outboxService: deps.outboxService ?? makeOutboxServiceMock(),
+    transactionManager: deps.transactionManager ?? makeTransactionManagerMock(),
     logger: deps.logger ?? makeLoggerMock(),
   };
 
@@ -168,6 +182,7 @@ describe('PaymentsService.capture', () => {
     const paymentsDataAccess = makePaymentsDataAccessMock();
     const providerRegistryService = makeProviderRegistryMock();
     const outboxService = makeOutboxServiceMock();
+    const transactionManager = makeTransactionManagerMock();
     const { service } = makeService({
       paymentsDataAccess,
       idempotencyService: makeIdempotencyServiceMock({
@@ -179,6 +194,7 @@ describe('PaymentsService.capture', () => {
       }),
       providerRegistryService,
       outboxService,
+      transactionManager,
     });
 
     await expect(service.capture(captureCommand)).resolves.toEqual({
@@ -187,7 +203,7 @@ describe('PaymentsService.capture', () => {
     });
 
     expect(paymentsDataAccess.findByIdForUpdate).not.toHaveBeenCalled();
-    expect(paymentsDataAccess.withTransaction).not.toHaveBeenCalled();
+    expect(transactionManager.run).not.toHaveBeenCalled();
     expect(providerRegistryService.getProvider).not.toHaveBeenCalled();
     expect(outboxService.recordPaymentCaptured).not.toHaveBeenCalled();
     expect(outboxService.recordPaymentFailed).not.toHaveBeenCalled();
@@ -650,15 +666,17 @@ describe('PaymentsService.capture', () => {
         getExistingOrStart: jest.fn().mockRejectedValue(ownershipRejection),
       });
       const paymentsDataAccess = makePaymentsDataAccessMock();
+      const transactionManager = makeTransactionManagerMock();
       const { service } = makeService({
         idempotencyService,
         paymentsDataAccess,
+        transactionManager,
       });
 
       await expect(service.capture(captureCommand)).rejects.toBe(ownershipRejection);
 
       expect(idempotencyService.markFailed).not.toHaveBeenCalled();
-      expect(paymentsDataAccess.withTransaction).not.toHaveBeenCalled();
+      expect(transactionManager.run).not.toHaveBeenCalled();
     },
   );
 
@@ -669,10 +687,12 @@ describe('PaymentsService.capture', () => {
     });
     const paymentsDataAccess = makePaymentsDataAccessMock();
     const outboxService = makeOutboxServiceMock();
+    const transactionManager = makeTransactionManagerMock();
     const { service } = makeService({
       idempotencyService,
       paymentsDataAccess,
       outboxService,
+      transactionManager,
     });
 
     await expect(service.capture(captureCommand)).rejects.toMatchObject({
@@ -689,6 +709,6 @@ describe('PaymentsService.capture', () => {
       idempotencyRecordId: 'idem-1',
       processingToken,
     });
-    expect(paymentsDataAccess.withTransaction).toHaveBeenCalledTimes(1);
+    expect(transactionManager.run).toHaveBeenCalledTimes(1);
   });
 });

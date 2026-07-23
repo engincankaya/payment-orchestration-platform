@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto';
-import { Knex } from 'knex';
 
 import PaymentsDataAccess, { PaymentRecord } from '../../data-access/payments/payments-data-access';
+import type {
+  TransactionContext,
+  TransactionManagerPort,
+} from '../../data-access/transaction-manager';
 import ApiError from '../../types/errors/api-error';
 import { Logger } from '../../utils/logger';
 import IdempotencyService from '../idempotency/idempotency-service';
@@ -10,7 +13,7 @@ import PaymentStateService, { PaymentStatus } from './payment-state-service';
 
 export type PaymentsDataAccessPort = Pick<
   PaymentsDataAccess,
-  'insert' | 'findById' | 'findByIdForUpdate' | 'updateStatusIfAuthorized' | 'withTransaction'
+  'insert' | 'findById' | 'findByIdForUpdate' | 'updateStatusIfAuthorized'
 >;
 export type IdempotencyServicePort = Pick<
   IdempotencyService,
@@ -31,7 +34,7 @@ export interface OutboxServicePort {
       correlationId: string;
       payment: PaymentRecord;
     },
-    trx: Knex.Transaction,
+    trx: TransactionContext,
   ): Promise<unknown>;
   recordPaymentFailed(
     input: {
@@ -39,7 +42,7 @@ export interface OutboxServicePort {
       operation: 'AUTHORIZE' | 'CAPTURE';
       payment: PaymentRecord;
     },
-    trx: Knex.Transaction,
+    trx: TransactionContext,
   ): Promise<unknown>;
 }
 
@@ -90,6 +93,7 @@ export default class PaymentsService {
   private providerRegistryService: ProviderRegistryServicePort;
   private paymentStateService?: PaymentStateServicePort;
   private outboxService?: OutboxServicePort;
+  private transactionManager: TransactionManagerPort;
   private logger: Logger;
 
   constructor(deps: {
@@ -98,6 +102,7 @@ export default class PaymentsService {
     providerRegistryService: ProviderRegistryServicePort;
     paymentStateService?: PaymentStateServicePort;
     outboxService?: OutboxServicePort;
+    transactionManager: TransactionManagerPort;
     logger: Logger;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
@@ -105,6 +110,7 @@ export default class PaymentsService {
     this.providerRegistryService = deps.providerRegistryService;
     this.paymentStateService = deps.paymentStateService;
     this.outboxService = deps.outboxService;
+    this.transactionManager = deps.transactionManager;
     this.logger = deps.logger;
   }
 
@@ -146,7 +152,7 @@ export default class PaymentsService {
       const now = new Date();
       const status = authorization.success ? PaymentStatus.AUTHORIZED : PaymentStatus.FAILED;
 
-      const body = await this.paymentsDataAccess.withTransaction(async (trx) => {
+      const body = await this.transactionManager.run(async (trx) => {
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
           merchant_id: command.merchantId,
@@ -222,7 +228,7 @@ export default class PaymentsService {
 
     try {
       const { outboxService, paymentStateService } = this.getCaptureDependencies();
-      const body = await this.paymentsDataAccess.withTransaction(async (trx) => {
+      const body = await this.transactionManager.run(async (trx) => {
         const payment = await this.paymentsDataAccess.findByIdForUpdate(command.paymentId, trx);
 
         if (!payment) {

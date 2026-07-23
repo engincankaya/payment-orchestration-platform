@@ -1,5 +1,4 @@
-import type { Knex } from 'knex';
-
+import type { TransactionContext } from '../../src/data-access/transaction-manager';
 import IdempotencyService, {
   IdempotencyDataAccessPort,
 } from '../../src/services/idempotency/idempotency-service';
@@ -448,7 +447,7 @@ describe('IdempotencyService', () => {
       status: 'COMPLETED',
     });
     const service = makeService(makeDataAccessMock({ markCompleted }));
-    const trx = { id: 'trx-1' } as unknown as Knex.Transaction;
+    const trx = { id: 'trx-1' } as unknown as TransactionContext;
 
     await service.markCompleted({
       idempotencyRecordId: 'idem-1',
@@ -480,7 +479,7 @@ describe('IdempotencyService', () => {
       status: 'FAILED',
     });
     const service = makeService(makeDataAccessMock({ markFailed }));
-    const trx = { id: 'trx-1' } as unknown as Knex.Transaction;
+    const trx = { id: 'trx-1' } as unknown as TransactionContext;
 
     await service.markFailed({
       idempotencyRecordId: 'idem-1',

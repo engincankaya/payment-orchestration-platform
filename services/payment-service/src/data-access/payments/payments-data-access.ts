@@ -1,6 +1,7 @@
-import { Knex } from 'knex';
+import type { Knex } from 'knex';
 
 import BaseDataAccess from '../base-data-access';
+import type { TransactionContext } from '../transaction-manager';
 
 export interface PaymentRecord {
   id: string;
@@ -47,22 +48,22 @@ export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
     super(deps, 'payments');
   }
 
-  public insert = async (record: InsertPaymentRecord, trx?: Knex.Transaction) => {
+  public insert = async (record: InsertPaymentRecord, trx?: TransactionContext) => {
     const [payment] = await this.query(trx).insert(record).returning('*');
     return payment;
   };
 
-  public findById = async (id: string, trx?: Knex.Transaction) => {
+  public findById = async (id: string, trx?: TransactionContext) => {
     return this.query(trx).where({ id }).first();
   };
 
-  public findByIdForUpdate = async (id: string, trx: Knex.Transaction) => {
+  public findByIdForUpdate = async (id: string, trx: TransactionContext) => {
     return this.query(trx).where({ id }).forUpdate().first();
   };
 
   public updateStatusIfAuthorized = async (
     input: UpdateAuthorizedPaymentStatusInput,
-    trx: Knex.Transaction,
+    trx: TransactionContext,
   ) => {
     const [payment] = await this.query(trx)
       .where({
@@ -79,9 +80,5 @@ export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
       .returning('*');
 
     return payment ?? null;
-  };
-
-  public withTransaction = async <T>(handler: (trx: Knex.Transaction) => Promise<T>) => {
-    return this.knex.transaction(handler);
   };
 }

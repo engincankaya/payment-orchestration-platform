@@ -1,3 +1,7 @@
+import type {
+  TransactionContext,
+  TransactionManagerPort,
+} from '../../src/data-access/transaction-manager';
 import PaymentsService, {
   IdempotencyServicePort,
   PaymentsDataAccessPort,
@@ -6,6 +10,7 @@ import PaymentsService, {
 import { Logger } from '../../src/utils/logger';
 
 const processingToken = '11111111-1111-4111-8111-111111111111';
+const defaultTrx = { trx: true } as unknown as TransactionContext;
 
 const makePaymentsDataAccessMock = (
   overrides: Partial<jest.Mocked<PaymentsDataAccessPort>> = {},
@@ -14,7 +19,16 @@ const makePaymentsDataAccessMock = (
   findById: jest.fn(),
   findByIdForUpdate: jest.fn(),
   updateStatusIfAuthorized: jest.fn(),
-  withTransaction: jest.fn().mockImplementation((handler) => handler({ trx: true })),
+  ...overrides,
+});
+
+const makeTransactionManagerMock = (
+  trx: TransactionContext = defaultTrx,
+  overrides: Partial<jest.Mocked<TransactionManagerPort>> = {},
+): jest.Mocked<TransactionManagerPort> => ({
+  run: jest.fn().mockImplementation(
+    async <T>(handler: (transaction: TransactionContext) => Promise<T>) => handler(trx),
+  ),
   ...overrides,
 });
 
@@ -58,12 +72,14 @@ const makeService = (deps?: {
   paymentsDataAccess?: jest.Mocked<PaymentsDataAccessPort>;
   idempotencyService?: jest.Mocked<IdempotencyServicePort>;
   providerRegistryService?: jest.Mocked<ProviderRegistryServicePort>;
+  transactionManager?: jest.Mocked<TransactionManagerPort>;
   logger?: jest.Mocked<Logger>;
 }) =>
   new PaymentsService({
     paymentsDataAccess: deps?.paymentsDataAccess ?? makePaymentsDataAccessMock(),
     idempotencyService: deps?.idempotencyService ?? makeIdempotencyServiceMock(),
     providerRegistryService: deps?.providerRegistryService ?? makeProviderRegistryMock(),
+    transactionManager: deps?.transactionManager ?? makeTransactionManagerMock(),
     logger: deps?.logger ?? makeLoggerMock(),
   });
 
@@ -82,13 +98,12 @@ describe('PaymentsService idempotency', () => {
       createdAt: '2026-07-08T00:00:00.000Z',
     };
     const insert = jest.fn();
-    const withTransaction = jest.fn();
+    const transactionManager = makeTransactionManagerMock();
     const markCompleted = jest.fn();
     const getDefaultProvider = jest.fn();
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
         insert,
-        withTransaction,
       }),
       idempotencyService: makeIdempotencyServiceMock({
         getExistingOrStart: jest.fn().mockResolvedValue({
@@ -101,6 +116,7 @@ describe('PaymentsService idempotency', () => {
       providerRegistryService: makeProviderRegistryMock({
         getDefaultProvider,
       }),
+      transactionManager,
     });
 
     await expect(
@@ -117,13 +133,13 @@ describe('PaymentsService idempotency', () => {
     });
 
     expect(insert).not.toHaveBeenCalled();
-    expect(withTransaction).not.toHaveBeenCalled();
+    expect(transactionManager.run).not.toHaveBeenCalled();
     expect(markCompleted).not.toHaveBeenCalled();
     expect(getDefaultProvider).not.toHaveBeenCalled();
   });
 
   it('stores successful payment response in idempotency record', async () => {
-    const trx = { trx: true };
+    const trx = { trx: true } as unknown as TransactionContext;
     const authorize = jest.fn().mockResolvedValue({
       success: true,
       provider: 'mock',
@@ -144,7 +160,6 @@ describe('PaymentsService idempotency', () => {
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
         insert,
-        withTransaction: jest.fn().mockImplementation((handler) => handler(trx)),
       }),
       idempotencyService: makeIdempotencyServiceMock({
         getExistingOrStart,
@@ -156,6 +171,7 @@ describe('PaymentsService idempotency', () => {
           capture: jest.fn(),
         }),
       }),
+      transactionManager: makeTransactionManagerMock(trx),
     });
 
     const result = await service.create({
