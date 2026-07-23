@@ -26,6 +26,7 @@ export interface IdempotencyRecord {
   updated_at: Date | string;
   expires_at?: Date | string | null;
   processing_expires_at?: Date | string | null;
+  processing_token: string;
 }
 
 export interface TryInsertProcessingInput {
@@ -37,6 +38,7 @@ export interface TryInsertProcessingInput {
     id: string;
   };
   processingExpiresAt: Date;
+  processingToken: string;
 }
 
 export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRecord> {
@@ -69,6 +71,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
         resource_type: input.resource.type,
         resource_id: input.resource.id,
         processing_expires_at: input.processingExpiresAt,
+        processing_token: input.processingToken,
       })
       .onConflict(['scope', 'idempotency_key'])
       .ignore()
@@ -81,6 +84,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     id: string,
     requestHash: string,
     processingExpiresAt: Date,
+    processingToken: string,
     trx?: Knex.Transaction,
   ) => {
     const [record] = await this.query(trx)
@@ -92,6 +96,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       .update({
         status: IdempotencyStatus.PROCESSING,
         processing_expires_at: processingExpiresAt,
+        processing_token: processingToken,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');
@@ -103,6 +108,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     id: string,
     requestHash: string,
     processingExpiresAt: Date,
+    processingToken: string,
     trx?: Knex.Transaction,
   ) => {
     const [record] = await this.query(trx)
@@ -114,6 +120,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       .where('processing_expires_at', '<', this.knex.fn.now())
       .update({
         processing_expires_at: processingExpiresAt,
+        processing_token: processingToken,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');
@@ -129,11 +136,16 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       resourceType: string;
       resourceId: string;
       expiresAt: Date;
+      processingToken: string;
     },
     trx?: Knex.Transaction,
   ) => {
     const [record] = await this.query(trx)
-      .where({ id: input.id })
+      .where({
+        id: input.id,
+        status: IdempotencyStatus.PROCESSING,
+        processing_token: input.processingToken,
+      })
       .update({
         status: IdempotencyStatus.COMPLETED,
         response_status_code: input.responseStatusCode,
@@ -148,12 +160,23 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
-  public markFailed = async (id: string, expiresAt: Date, trx?: Knex.Transaction) => {
+  public markFailed = async (
+    input: {
+      id: string;
+      expiresAt: Date;
+      processingToken: string;
+    },
+    trx?: Knex.Transaction,
+  ) => {
     const [record] = await this.query(trx)
-      .where({ id })
+      .where({
+        id: input.id,
+        status: IdempotencyStatus.PROCESSING,
+        processing_token: input.processingToken,
+      })
       .update({
         status: IdempotencyStatus.FAILED,
-        expires_at: expiresAt,
+        expires_at: input.expiresAt,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');

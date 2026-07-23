@@ -1,27 +1,47 @@
 import { randomUUID } from 'crypto';
+import { Knex } from 'knex';
 
 import PaymentsDataAccess, { PaymentRecord } from '../../data-access/payments/payments-data-access';
 import ApiError from '../../types/errors/api-error';
 import { Logger } from '../../utils/logger';
 import IdempotencyService from '../idempotency/idempotency-service';
 import ProviderRegistryService from '../providers/provider-registry-service';
+import PaymentStateService, { PaymentStatus } from './payment-state-service';
 
 export type PaymentsDataAccessPort = Pick<
   PaymentsDataAccess,
-  'insert' | 'findById' | 'withTransaction'
+  'insert' | 'findById' | 'findByIdForUpdate' | 'updateStatusIfAuthorized' | 'withTransaction'
 >;
 export type IdempotencyServicePort = Pick<
   IdempotencyService,
   'buildRequestHash' | 'getExistingOrStart' | 'markCompleted' | 'markFailed'
 >;
-export type ProviderRegistryServicePort = Pick<ProviderRegistryService, 'getDefaultProvider'>;
+export type ProviderRegistryServicePort = Pick<
+  ProviderRegistryService,
+  'getDefaultProvider' | 'getProvider'
+>;
+export type PaymentStateServicePort = Pick<
+  PaymentStateService,
+  'ensureCanCapture' | 'ensureTransition'
+>;
 
-export const PaymentStatus = {
-  AUTHORIZED: 'AUTHORIZED',
-  FAILED: 'FAILED',
-} as const;
-
-export type PaymentStatusValue = (typeof PaymentStatus)[keyof typeof PaymentStatus];
+export interface OutboxServicePort {
+  recordPaymentCaptured(
+    input: {
+      correlationId: string;
+      payment: PaymentRecord;
+    },
+    trx: Knex.Transaction,
+  ): Promise<unknown>;
+  recordPaymentFailed(
+    input: {
+      correlationId: string;
+      operation: 'AUTHORIZE' | 'CAPTURE';
+      payment: PaymentRecord;
+    },
+    trx: Knex.Transaction,
+  ): Promise<unknown>;
+}
 
 export interface CreatePaymentCommand {
   correlationId: string;
@@ -32,6 +52,12 @@ export interface CreatePaymentCommand {
 }
 
 export interface GetPaymentQuery {
+  paymentId: string;
+}
+
+export interface CapturePaymentCommand {
+  correlationId: string;
+  idempotencyKey: string;
   paymentId: string;
 }
 
@@ -53,21 +79,32 @@ export interface CreatePaymentResult {
   body: PaymentDto;
 }
 
+export interface CapturePaymentResult {
+  statusCode: number;
+  body: PaymentDto;
+}
+
 export default class PaymentsService {
   private paymentsDataAccess: PaymentsDataAccessPort;
   private idempotencyService: IdempotencyServicePort;
   private providerRegistryService: ProviderRegistryServicePort;
+  private paymentStateService?: PaymentStateServicePort;
+  private outboxService?: OutboxServicePort;
   private logger: Logger;
 
   constructor(deps: {
     paymentsDataAccess: PaymentsDataAccessPort;
     idempotencyService: IdempotencyServicePort;
     providerRegistryService: ProviderRegistryServicePort;
+    paymentStateService?: PaymentStateServicePort;
+    outboxService?: OutboxServicePort;
     logger: Logger;
   }) {
     this.paymentsDataAccess = deps.paymentsDataAccess;
     this.idempotencyService = deps.idempotencyService;
     this.providerRegistryService = deps.providerRegistryService;
+    this.paymentStateService = deps.paymentStateService;
+    this.outboxService = deps.outboxService;
     this.logger = deps.logger;
   }
 
@@ -131,6 +168,7 @@ export default class PaymentsService {
           responseBody,
           resourceType: 'payment',
           resourceId: responseBody.id,
+          processingToken: idempotencyDecision.processingToken,
           trx,
         });
 
@@ -140,8 +178,15 @@ export default class PaymentsService {
       return { statusCode: 201, body };
     } catch (error) {
       await this.idempotencyService
-        .markFailed({ idempotencyRecordId: idempotencyDecision.recordId })
+        .markFailed({
+          idempotencyRecordId: idempotencyDecision.recordId,
+          processingToken: idempotencyDecision.processingToken,
+        })
         .catch((markFailedError) => {
+          if (this.isOwnershipLost(markFailedError)) {
+            throw markFailedError;
+          }
+
           this.logger.error('Failed to mark idempotency record as failed', {
             idempotencyRecordId: idempotencyDecision.recordId,
             message:
@@ -149,6 +194,135 @@ export default class PaymentsService {
             stack: markFailedError instanceof Error ? markFailedError.stack : undefined,
           });
         });
+
+      throw error;
+    }
+  };
+
+  public capture = async (command: CapturePaymentCommand): Promise<CapturePaymentResult> => {
+    const requestHash = this.idempotencyService.buildRequestHash({
+      paymentId: command.paymentId,
+    });
+    const idempotencyDecision = await this.idempotencyService.getExistingOrStart({
+      scope: `payments:capture:${command.paymentId}`,
+      idempotencyKey: command.idempotencyKey,
+      requestHash,
+      resource: {
+        type: 'payment',
+        id: command.paymentId,
+      },
+    });
+
+    if (idempotencyDecision.type === 'COMPLETED') {
+      return {
+        statusCode: idempotencyDecision.responseStatusCode,
+        body: idempotencyDecision.responseBody as PaymentDto,
+      };
+    }
+
+    try {
+      const { outboxService, paymentStateService } = this.getCaptureDependencies();
+      const body = await this.paymentsDataAccess.withTransaction(async (trx) => {
+        const payment = await this.paymentsDataAccess.findByIdForUpdate(command.paymentId, trx);
+
+        if (!payment) {
+          throw new ApiError({
+            code: 'PAYMENT_NOT_FOUND',
+            message: 'Payment not found',
+            statusCode: 404,
+          });
+        }
+
+        paymentStateService.ensureCanCapture(payment);
+
+        const provider = this.providerRegistryService.getProvider(payment.provider);
+
+        if (!payment.provider_payment_id) {
+          throw new ApiError({
+            code: 'PAYMENT_PROVIDER_REFERENCE_MISSING',
+            message: 'Payment provider reference is missing',
+            statusCode: 500,
+            isOperational: false,
+          });
+        }
+
+        const captureResult = await provider.capture({
+          paymentId: payment.id,
+          providerPaymentId: payment.provider_payment_id,
+          amountMinor: Number(payment.amount_minor),
+          currency: payment.currency,
+        });
+        const now = new Date();
+        const targetStatus = captureResult.success
+          ? PaymentStatus.CAPTURED
+          : PaymentStatus.CAPTURE_FAILED;
+
+        paymentStateService.ensureTransition(PaymentStatus.AUTHORIZED, targetStatus);
+
+        const updatedPayment = await this.paymentsDataAccess.updateStatusIfAuthorized({
+          id: payment.id,
+          status: targetStatus,
+          captured_at: captureResult.success ? now : null,
+          failed_at: captureResult.success ? null : now,
+          failure_code: captureResult.failureCode ?? null,
+          failure_message: captureResult.failureMessage ?? null,
+        }, trx);
+
+        if (!updatedPayment) {
+          throw new ApiError({
+            code: 'PAYMENT_NOT_CAPTURABLE',
+            message: 'Payment is not capturable',
+            statusCode: 409,
+          });
+        }
+
+        if (captureResult.success) {
+          await outboxService.recordPaymentCaptured({
+            correlationId: command.correlationId,
+            payment: updatedPayment,
+          }, trx);
+        } else {
+          await outboxService.recordPaymentFailed({
+            correlationId: command.correlationId,
+            operation: 'CAPTURE',
+            payment: updatedPayment,
+          }, trx);
+        }
+
+        const responseBody = this.toDto(updatedPayment);
+
+        await this.idempotencyService.markCompleted({
+          idempotencyRecordId: idempotencyDecision.recordId,
+          processingToken: idempotencyDecision.processingToken,
+          responseStatusCode: 200,
+          responseBody,
+          resourceType: 'payment',
+          resourceId: updatedPayment.id,
+          trx,
+        });
+
+        return responseBody;
+      });
+
+      return { statusCode: 200, body };
+    } catch (error) {
+      try {
+        await this.idempotencyService.markFailed({
+          idempotencyRecordId: idempotencyDecision.recordId,
+          processingToken: idempotencyDecision.processingToken,
+        });
+      } catch (markFailedError) {
+        if (this.isOwnershipLost(markFailedError)) {
+          throw markFailedError;
+        }
+
+        this.logger.error('Failed to mark idempotency record as failed', {
+          idempotencyRecordId: idempotencyDecision.recordId,
+          message:
+            markFailedError instanceof Error ? markFailedError.message : String(markFailedError),
+          stack: markFailedError instanceof Error ? markFailedError.stack : undefined,
+        });
+      }
 
       throw error;
     }
@@ -181,5 +355,25 @@ export default class PaymentsService {
       failureMessage: payment.failure_message,
       createdAt: new Date(payment.created_at).toISOString(),
     };
+  }
+
+  private getCaptureDependencies() {
+    if (!this.paymentStateService || !this.outboxService) {
+      throw new ApiError({
+        code: 'CAPTURE_DEPENDENCIES_NOT_CONFIGURED',
+        message: 'Capture dependencies are not configured',
+        statusCode: 500,
+        isOperational: false,
+      });
+    }
+
+    return {
+      outboxService: this.outboxService,
+      paymentStateService: this.paymentStateService,
+    };
+  }
+
+  private isOwnershipLost(error: unknown) {
+    return error instanceof ApiError && error.code === 'IDEMPOTENCY_OWNERSHIP_LOST';
   }
 }

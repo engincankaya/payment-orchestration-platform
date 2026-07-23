@@ -13,6 +13,8 @@ export default class MockPaymentProvider implements PaymentProvider {
     this.providerName = deps.env.MOCK_PROVIDER_NAME ?? 'mock-provider';
   }
 
+  public getProviderName = () => this.providerName;
+
   public authorize = async (input: AuthorizePaymentInput): Promise<AuthorizePaymentResult> => {
     if (input.amountMinor === 9999) {
       return {

@@ -5,11 +5,15 @@ import PaymentsService, {
 } from '../../src/services/payments/payments-service';
 import { Logger } from '../../src/utils/logger';
 
+const processingToken = '11111111-1111-4111-8111-111111111111';
+
 const makePaymentsDataAccessMock = (
   overrides: Partial<jest.Mocked<PaymentsDataAccessPort>> = {},
 ): jest.Mocked<PaymentsDataAccessPort> => ({
   insert: jest.fn(),
   findById: jest.fn(),
+  findByIdForUpdate: jest.fn(),
+  updateStatusIfAuthorized: jest.fn(),
   withTransaction: jest.fn().mockImplementation((handler) => handler({ trx: true })),
   ...overrides,
 });
@@ -22,6 +26,7 @@ const makeIdempotencyServiceMock = (
     type: 'STARTED',
     recordId: 'idem-1',
     resourceId: 'payment-1',
+    processingToken,
   }),
   markCompleted: jest.fn().mockResolvedValue(null),
   markFailed: jest.fn().mockResolvedValue(null),
@@ -39,6 +44,7 @@ const makeProviderRegistryMock = (
     }),
     capture: jest.fn(),
   }),
+  getProvider: jest.fn(),
   ...overrides,
 });
 
@@ -133,6 +139,7 @@ describe('PaymentsService idempotency', () => {
       type: 'STARTED',
       recordId: 'idem-1',
       resourceId: 'payment-1',
+      processingToken,
     });
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
@@ -181,6 +188,7 @@ describe('PaymentsService idempotency', () => {
     );
     expect(markCompleted).toHaveBeenCalledWith({
       idempotencyRecordId: 'idem-1',
+      processingToken,
       resourceType: 'payment',
       resourceId: result.body.id,
       responseStatusCode: 201,
@@ -260,7 +268,10 @@ describe('PaymentsService idempotency', () => {
       }),
     ).rejects.toThrow('database unavailable');
 
-    expect(markFailed).toHaveBeenCalledWith({ idempotencyRecordId: 'idem-1' });
+    expect(markFailed).toHaveBeenCalledWith({
+      idempotencyRecordId: 'idem-1',
+      processingToken,
+    });
   });
 
   it('keeps the original create error when marking idempotency failed also fails', async () => {
@@ -286,7 +297,10 @@ describe('PaymentsService idempotency', () => {
       }),
     ).rejects.toThrow('database unavailable');
 
-    expect(markFailed).toHaveBeenCalledWith({ idempotencyRecordId: 'idem-1' });
+    expect(markFailed).toHaveBeenCalledWith({
+      idempotencyRecordId: 'idem-1',
+      processingToken,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       'Failed to mark idempotency record as failed',
       expect.objectContaining({
@@ -317,6 +331,7 @@ describe('PaymentsService idempotency', () => {
           type: 'STARTED',
           recordId: 'idem-1',
           resourceId: 'reserved-payment-1',
+          processingToken,
         }),
       }),
       providerRegistryService: makeProviderRegistryMock({

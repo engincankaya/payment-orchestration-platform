@@ -33,6 +33,15 @@ export interface InsertPaymentRecord {
   failed_at?: Date | null;
 }
 
+export interface UpdateAuthorizedPaymentStatusInput {
+  id: string;
+  status: string;
+  captured_at: Date | null;
+  failed_at: Date | null;
+  failure_code: string | null;
+  failure_message: string | null;
+}
+
 export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
   constructor(deps: { knex: Knex }) {
     super(deps, 'payments');
@@ -45,6 +54,31 @@ export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
 
   public findById = async (id: string, trx?: Knex.Transaction) => {
     return this.query(trx).where({ id }).first();
+  };
+
+  public findByIdForUpdate = async (id: string, trx: Knex.Transaction) => {
+    return this.query(trx).where({ id }).forUpdate().first();
+  };
+
+  public updateStatusIfAuthorized = async (
+    input: UpdateAuthorizedPaymentStatusInput,
+    trx: Knex.Transaction,
+  ) => {
+    const [payment] = await this.query(trx)
+      .where({
+        id: input.id,
+        status: 'AUTHORIZED',
+      })
+      .update({
+        status: input.status,
+        captured_at: input.captured_at,
+        failed_at: input.failed_at,
+        failure_code: input.failure_code,
+        failure_message: input.failure_message,
+      })
+      .returning('*');
+
+    return payment ?? null;
   };
 
   public withTransaction = async <T>(handler: (trx: Knex.Transaction) => Promise<T>) => {

@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Knex } from 'knex';
 
 import IdempotencyDataAccess, {
@@ -18,7 +18,7 @@ export type IdempotencyDataAccessPort = Pick<
 >;
 
 export type IdempotencyDecision =
-  | { type: 'STARTED'; recordId: string; resourceId: string }
+  | { type: 'STARTED'; recordId: string; resourceId: string; processingToken: string }
   | { type: 'COMPLETED'; responseStatusCode: number; responseBody: unknown };
 
 export default class IdempotencyService {
@@ -69,9 +69,11 @@ export default class IdempotencyService {
       return this.decideFromExisting(existing, input.requestHash);
     }
 
+    const processingToken = randomUUID();
     const inserted = await this.idempotencyDataAccess.tryInsertProcessing({
       ...input,
       processingExpiresAt: this.buildProcessingExpiresAt(),
+      processingToken,
     });
 
     if (inserted) {
@@ -101,27 +103,45 @@ export default class IdempotencyService {
     responseBody: unknown;
     resourceType: string;
     resourceId: string;
+    processingToken: string;
     trx?: Knex.Transaction;
   }) => {
-    return this.idempotencyDataAccess.markCompleted({
+    const record = await this.idempotencyDataAccess.markCompleted({
       id: input.idempotencyRecordId,
       responseStatusCode: input.responseStatusCode,
       responseBody: input.responseBody,
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       expiresAt: this.buildExpiresAt(this.completedTtlMs),
+      processingToken: input.processingToken,
     }, input.trx);
+
+    if (!record) {
+      throw this.buildOwnershipLostError();
+    }
+
+    return record;
   };
 
   public markFailed = async (input: {
     idempotencyRecordId: string;
+    processingToken: string;
     trx?: Knex.Transaction;
   }) => {
-    return this.idempotencyDataAccess.markFailed(
-      input.idempotencyRecordId,
-      this.buildExpiresAt(this.failedTtlMs),
+    const record = await this.idempotencyDataAccess.markFailed(
+      {
+        id: input.idempotencyRecordId,
+        expiresAt: this.buildExpiresAt(this.failedTtlMs),
+        processingToken: input.processingToken,
+      },
       input.trx,
     );
+
+    if (!record) {
+      throw this.buildOwnershipLostError();
+    }
+
+    return record;
   };
 
   private decideFromExisting = async (
@@ -145,10 +165,12 @@ export default class IdempotencyService {
     }
 
     if (record.status === IdempotencyStatus.FAILED) {
+      const processingToken = randomUUID();
       const reactivated = await this.idempotencyDataAccess.reactivateFailed(
         record.id,
         requestHash,
         this.buildProcessingExpiresAt(),
+        processingToken,
       );
 
       if (reactivated) {
@@ -157,10 +179,12 @@ export default class IdempotencyService {
     }
 
     if (record.status === IdempotencyStatus.PROCESSING && this.isProcessingExpired(record)) {
+      const processingToken = randomUUID();
       const reactivated = await this.idempotencyDataAccess.takeoverExpiredProcessing(
         record.id,
         requestHash,
         this.buildProcessingExpiresAt(),
+        processingToken,
       );
 
       if (reactivated) {
@@ -197,7 +221,29 @@ export default class IdempotencyService {
       });
     }
 
-    return { type: 'STARTED', recordId: record.id, resourceId: record.resource_id };
+    if (!record.processing_token) {
+      throw new ApiError({
+        code: 'IDEMPOTENCY_PROCESSING_TOKEN_MISSING',
+        message: 'Idempotency processing token is missing',
+        statusCode: 500,
+        isOperational: false,
+      });
+    }
+
+    return {
+      type: 'STARTED',
+      recordId: record.id,
+      resourceId: record.resource_id,
+      processingToken: record.processing_token,
+    };
+  }
+
+  private buildOwnershipLostError() {
+    return new ApiError({
+      code: 'IDEMPOTENCY_OWNERSHIP_LOST',
+      message: 'Idempotency ownership was lost',
+      statusCode: 409,
+    });
   }
 
   private buildProcessingExpiresAt() {

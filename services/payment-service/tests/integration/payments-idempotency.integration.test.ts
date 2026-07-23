@@ -10,6 +10,7 @@ import * as createPaymentsMigration from '../../src/bootstrap/knex/migrations/00
 import * as createIdempotencyKeysMigration from '../../src/bootstrap/knex/migrations/002_create_idempotency_keys';
 import * as addIdempotencyLeaseMetadata from '../../src/bootstrap/knex/migrations/003_add_idempotency_lease_metadata';
 import * as hardenPaymentIntegrity from '../../src/bootstrap/knex/migrations/004_harden_payment_integrity';
+import * as addIdempotencyProcessingToken from '../../src/bootstrap/knex/migrations/005_add_idempotency_processing_token';
 import IdempotencyDataAccess from '../../src/data-access/idempotency/idempotency-data-access';
 import { AMOUNT_MINOR_MAX } from '../../src/server/routes/payments/payments';
 import ServerApplication from '../../src/server/server';
@@ -110,6 +111,7 @@ describe('Payment Service idempotency integration', () => {
     await createIdempotencyKeysMigration.up(knex);
     await addIdempotencyLeaseMetadata.up(knex);
     await hardenPaymentIntegrity.up(knex);
+    await addIdempotencyProcessingToken.up(knex);
   }, 120_000);
 
   afterAll(async () => {
@@ -157,6 +159,7 @@ describe('Payment Service idempotency integration', () => {
       requestHash: 'hash-1',
       resource: { type: 'payment', id: '55555555-5555-4555-8555-555555555555' },
       processingExpiresAt: new Date(Date.now() + 60_000),
+      processingToken: '11111111-1111-4111-8111-111111111111',
     });
     const second = await dataAccess.tryInsertProcessing({
       scope: `payments:create:${merchantId}`,
@@ -164,12 +167,14 @@ describe('Payment Service idempotency integration', () => {
       requestHash: 'hash-1',
       resource: { type: 'payment', id: '66666666-6666-4666-8666-666666666666' },
       processingExpiresAt: new Date(Date.now() + 60_000),
+      processingToken: '22222222-2222-4222-8222-222222222222',
     });
 
     expect(first).toMatchObject({
       scope: `payments:create:${merchantId}`,
       idempotency_key: 'idem-data-access-conflict',
       status: 'PROCESSING',
+      processing_token: '11111111-1111-4111-8111-111111111111',
     });
     expect(second).toBeNull();
   });
@@ -185,6 +190,7 @@ describe('Payment Service idempotency integration', () => {
       requestHash: 'hash-1',
       resource: { type: 'payment', id: '77777777-7777-4777-8777-777777777777' },
       processingExpiresAt: new Date(Date.now() + 60_000),
+      processingToken: '33333333-3333-4333-8333-333333333333',
     });
     const second = await dataAccess.tryInsertProcessing({
       scope: 'payments:create:22222222-2222-4222-8222-222222222222',
@@ -192,6 +198,7 @@ describe('Payment Service idempotency integration', () => {
       requestHash: 'hash-1',
       resource: { type: 'payment', id: '88888888-8888-4888-8888-888888888888' },
       processingExpiresAt: new Date(Date.now() + 60_000),
+      processingToken: '44444444-4444-4444-8444-444444444444',
     });
 
     expect(first).not.toBeNull();
@@ -213,17 +220,20 @@ describe('Payment Service idempotency integration', () => {
       status: 'FAILED',
       resource_type: 'payment',
       resource_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      processing_token: '55555555-5555-4555-8555-555555555555',
     });
 
     const record = await dataAccess.reactivateFailed(
       '99999999-9999-4999-8999-999999999999',
       'hash-1',
       newLease,
+      '66666666-6666-4666-8666-666666666666',
     );
 
     expect(record).toMatchObject({
       status: 'PROCESSING',
       resource_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      processing_token: '66666666-6666-4666-8666-666666666666',
     });
     expect(record?.processing_expires_at).not.toBeNull();
   });
@@ -243,25 +253,145 @@ describe('Payment Service idempotency integration', () => {
       resource_type: 'payment',
       resource_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       processing_expires_at: new Date(Date.now() - 1000),
+      processing_token: '77777777-7777-4777-8777-777777777777',
     });
 
     const first = await dataAccess.takeoverExpiredProcessing(
       idempotencyRecordId,
       'hash-1',
       new Date(Date.now() + 60_000),
+      '88888888-8888-4888-8888-888888888888',
     );
     const second = await dataAccess.takeoverExpiredProcessing(
       idempotencyRecordId,
       'hash-1',
       new Date(Date.now() + 60_000),
+      '99999999-9999-4999-8999-999999999999',
     );
 
     expect(first).toMatchObject({
       status: 'PROCESSING',
       resource_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      processing_token: '88888888-8888-4888-8888-888888888888',
     });
     expect(first?.processing_expires_at).not.toBeNull();
     expect(second).toBeNull();
+  });
+
+  it('allows only the current PROCESSING token to mark a record COMPLETED', async () => {
+    const dataAccess = createTestContainer().resolve<IdempotencyDataAccess>(
+      'idempotencyDataAccess',
+    );
+    const id = '12121212-1212-4212-8212-121212121212';
+    const currentToken = '13131313-1313-4313-8313-131313131313';
+
+    await knex('idempotency_keys').insert({
+      id,
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-completion-fencing',
+      request_hash: 'hash-1',
+      status: 'PROCESSING',
+      resource_type: 'payment',
+      resource_id: '14141414-1414-4414-8414-141414141414',
+      processing_token: currentToken,
+    });
+
+    const staleResult = await dataAccess.markCompleted({
+      id,
+      processingToken: '15151515-1515-4515-8515-151515151515',
+      responseStatusCode: 201,
+      responseBody: { id: '14141414-1414-4414-8414-141414141414' },
+      resourceType: 'payment',
+      resourceId: '14141414-1414-4414-8414-141414141414',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const afterStaleWrite = await knex('idempotency_keys').where({ id }).first();
+    const currentResult = await dataAccess.markCompleted({
+      id,
+      processingToken: currentToken,
+      responseStatusCode: 201,
+      responseBody: { id: '14141414-1414-4414-8414-141414141414' },
+      resourceType: 'payment',
+      resourceId: '14141414-1414-4414-8414-141414141414',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const terminalRewrite = await dataAccess.markFailed({
+      id,
+      processingToken: currentToken,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const afterTerminalRewrite = await knex('idempotency_keys').where({ id }).first();
+
+    expect(staleResult).toBeNull();
+    expect(afterStaleWrite).toMatchObject({
+      status: 'PROCESSING',
+      processing_token: currentToken,
+    });
+    expect(currentResult).toMatchObject({
+      status: 'COMPLETED',
+      processing_token: currentToken,
+    });
+    expect(terminalRewrite).toBeNull();
+    expect(afterTerminalRewrite).toMatchObject({
+      status: 'COMPLETED',
+      processing_token: currentToken,
+    });
+  });
+
+  it('allows only the current PROCESSING token to mark a record FAILED', async () => {
+    const dataAccess = createTestContainer().resolve<IdempotencyDataAccess>(
+      'idempotencyDataAccess',
+    );
+    const id = '16161616-1616-4616-8616-161616161616';
+    const currentToken = '17171717-1717-4717-8717-171717171717';
+
+    await knex('idempotency_keys').insert({
+      id,
+      scope: `payments:create:${merchantId}`,
+      idempotency_key: 'idem-failure-fencing',
+      request_hash: 'hash-1',
+      status: 'PROCESSING',
+      resource_type: 'payment',
+      resource_id: '18181818-1818-4818-8818-181818181818',
+      processing_token: currentToken,
+    });
+
+    const staleResult = await dataAccess.markFailed({
+      id,
+      processingToken: '19191919-1919-4919-8919-191919191919',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const afterStaleWrite = await knex('idempotency_keys').where({ id }).first();
+    const currentResult = await dataAccess.markFailed({
+      id,
+      processingToken: currentToken,
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const terminalRewrite = await dataAccess.markCompleted({
+      id,
+      processingToken: currentToken,
+      responseStatusCode: 201,
+      responseBody: { id: '18181818-1818-4818-8818-181818181818' },
+      resourceType: 'payment',
+      resourceId: '18181818-1818-4818-8818-181818181818',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const afterTerminalRewrite = await knex('idempotency_keys').where({ id }).first();
+
+    expect(staleResult).toBeNull();
+    expect(afterStaleWrite).toMatchObject({
+      status: 'PROCESSING',
+      processing_token: currentToken,
+    });
+    expect(currentResult).toMatchObject({
+      status: 'FAILED',
+      processing_token: currentToken,
+    });
+    expect(terminalRewrite).toBeNull();
+    expect(afterTerminalRewrite).toMatchObject({
+      status: 'FAILED',
+      processing_token: currentToken,
+    });
   });
 
   it('does not create an idempotency record when idempotency-key is missing', async () => {
@@ -416,6 +546,7 @@ describe('Payment Service idempotency integration', () => {
       response_status_code: 202,
       response_body: cachedPayment,
       expires_at: new Date(Date.now() + 60_000),
+      processing_token: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
     });
 
     const response = await request(createApp(provider.registry))
@@ -470,6 +601,7 @@ describe('Payment Service idempotency integration', () => {
       request_hash: buildRequestHash(body),
       status: 'PROCESSING',
       processing_expires_at: new Date(Date.now() + 60_000),
+      processing_token: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     });
 
     const response = await request(createApp())
@@ -499,6 +631,7 @@ describe('Payment Service idempotency integration', () => {
       resource_type: 'payment',
       resource_id: reservedPaymentId,
       processing_expires_at: new Date(Date.now() - 1000),
+      processing_token: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     });
 
     const response = await request(createApp())
@@ -621,6 +754,7 @@ describe('Payment Service idempotency integration', () => {
         idempotency_key: 'idem-invalid-status',
         request_hash: 'hash-1',
         status: 'UNKNOWN',
+        processing_token: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
       }),
     ).rejects.toMatchObject({ code: '23514' });
   });
@@ -652,6 +786,7 @@ describe('Payment Service idempotency integration', () => {
       idempotency_key: 'idem-trigger-updated-at',
       request_hash: 'hash-1',
       status: 'PROCESSING',
+      processing_token: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
     });
     const before = await knex('idempotency_keys')
       .where({ id: 'ffffffff-ffff-4fff-8fff-ffffffffffff' })
