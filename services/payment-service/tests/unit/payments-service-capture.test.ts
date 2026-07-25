@@ -20,7 +20,7 @@ const processingToken = '11111111-1111-4111-8111-111111111111';
 const authorizedPayment: PaymentRecord = {
   id: 'payment-1',
   merchant_id: 'merchant-1',
-  amount_minor: 1000,
+  amount_minor: '1000',
   currency: 'TRY',
   status: 'AUTHORIZED',
   provider: 'original-provider',

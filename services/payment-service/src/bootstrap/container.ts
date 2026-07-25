@@ -25,7 +25,6 @@ export function buildContainer(
     env: asValue(process.env),
     knex: asValue(knex),
     logger: asFunction(logger).singleton(),
-    outboxService: asValue(undefined),
     server: asClass(ServerApplication).singleton(),
   });
 

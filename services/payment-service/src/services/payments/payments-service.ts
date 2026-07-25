@@ -170,7 +170,7 @@ export default class PaymentsService {
         const payment = await this.paymentsDataAccess.insert({
           id: paymentId,
           merchant_id: command.merchantId,
-          amount_minor: command.amountMinor,
+          amount_minor: String(command.amountMinor),
           currency: command.currency,
           status,
           provider: authorization.provider,

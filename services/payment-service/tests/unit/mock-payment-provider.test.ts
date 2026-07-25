@@ -1,4 +1,51 @@
 import MockPaymentProvider from '../../src/services/providers/mock-payment-provider';
+import type {
+  AuthorizePaymentResult,
+  CapturePaymentResult,
+} from '../../src/services/providers/payment-provider';
+
+type Assert<T extends true> = T;
+type AuthorizationSuccessRequiresProviderReference = Assert<
+  { success: true; provider: string } extends AuthorizePaymentResult ? false : true
+>;
+type AuthorizationFailureRequiresCode = Assert<
+  {
+    success: false;
+    provider: string;
+    providerPaymentId?: string;
+    failureMessage: string;
+  } extends AuthorizePaymentResult
+    ? false
+    : true
+>;
+type AuthorizationFailureRequiresMessage = Assert<
+  {
+    success: false;
+    provider: string;
+    providerPaymentId?: string;
+    failureCode: string;
+  } extends AuthorizePaymentResult
+    ? false
+    : true
+>;
+type CaptureFailureRequiresCode = Assert<
+  {
+    success: false;
+    provider: string;
+    failureMessage: string;
+  } extends CapturePaymentResult
+    ? false
+    : true
+>;
+type CaptureFailureRequiresMessage = Assert<
+  {
+    success: false;
+    provider: string;
+    failureCode: string;
+  } extends CapturePaymentResult
+    ? false
+    : true
+>;
 
 const makeProvider = (providerName = 'configured-mock-provider') =>
   new MockPaymentProvider({

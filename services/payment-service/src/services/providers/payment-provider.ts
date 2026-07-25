@@ -5,13 +5,21 @@ export interface AuthorizePaymentInput {
   currency: string;
 }
 
-export interface AuthorizePaymentResult {
-  success: boolean;
-  provider: string;
-  providerPaymentId?: string;
-  failureCode?: string;
-  failureMessage?: string;
-}
+export type AuthorizePaymentResult =
+  | {
+      success: true;
+      provider: string;
+      providerPaymentId: string;
+      failureCode?: never;
+      failureMessage?: never;
+    }
+  | {
+      success: false;
+      provider: string;
+      providerPaymentId?: string;
+      failureCode: string;
+      failureMessage: string;
+    };
 
 export interface CapturePaymentInput {
   paymentId: string;
@@ -20,12 +28,19 @@ export interface CapturePaymentInput {
   currency: string;
 }
 
-export interface CapturePaymentResult {
-  success: boolean;
-  provider: string;
-  failureCode?: string;
-  failureMessage?: string;
-}
+export type CapturePaymentResult =
+  | {
+      success: true;
+      provider: string;
+      failureCode?: never;
+      failureMessage?: never;
+    }
+  | {
+      success: false;
+      provider: string;
+      failureCode: string;
+      failureMessage: string;
+    };
 
 // External gateways are adapted to this contract before they are used by payment orchestration.
 export interface PaymentAuthorizer {

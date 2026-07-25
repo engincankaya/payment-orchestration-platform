@@ -6,7 +6,7 @@ import type { TransactionContext } from '../transaction-manager';
 export interface PaymentRecord {
   id: string;
   merchant_id: string;
-  amount_minor: number;
+  amount_minor: string;
   currency: string;
   status: string;
   provider: string;
@@ -23,7 +23,7 @@ export interface PaymentRecord {
 export interface InsertPaymentRecord {
   id: string;
   merchant_id: string;
-  amount_minor: number;
+  amount_minor: string;
   currency: string;
   status: string;
   provider: string;
