@@ -1,7 +1,13 @@
 import Joi from 'joi';
 
 type JoiDescription = ReturnType<Joi.Schema['describe']>;
-type JoiRuleDescription = { name: string };
+type JoiRuleDescription = {
+  name: string;
+  args?: {
+    limit?: number;
+    regex?: string;
+  };
+};
 
 function isRequired(description: JoiDescription) {
   const flags = description.flags as { presence?: string } | undefined;
@@ -19,6 +25,22 @@ function hasRule(description: JoiDescription, ruleName: string) {
   const rules = description.rules as JoiRuleDescription[] | undefined;
 
   return rules?.some((rule) => rule.name === ruleName) ?? false;
+}
+
+function getRule(description: JoiDescription, ruleName: string) {
+  const rules = description.rules as JoiRuleDescription[] | undefined;
+
+  return rules?.find((rule) => rule.name === ruleName);
+}
+
+function getPattern(description: JoiDescription) {
+  const regex = getRule(description, 'pattern')?.args?.regex;
+
+  if (!regex) {
+    return undefined;
+  }
+
+  return regex.match(/^\/([\s\S]*)\/[a-z]*$/)?.[1] ?? regex;
 }
 
 function convertObjectDescription(description: JoiDescription): Record<string, unknown> {
@@ -67,10 +89,17 @@ export function convertJoiDescription(description: JoiDescription): Record<strin
     return { type: 'boolean' };
   }
 
+  const minLength = getRule(description, 'min')?.args?.limit;
+  const maxLength = getRule(description, 'max')?.args?.limit;
+  const pattern = getPattern(description);
+
   return {
     type: 'string',
     ...(validValues.length > 0 ? { enum: validValues } : {}),
     ...(hasRule(description, 'guid') || hasRule(description, 'uuid') ? { format: 'uuid' } : {}),
+    ...(minLength !== undefined ? { minLength } : {}),
+    ...(maxLength !== undefined ? { maxLength } : {}),
+    ...(pattern !== undefined ? { pattern } : {}),
   };
 }
 

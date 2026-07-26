@@ -8,6 +8,20 @@ type RequestSegment = 'body' | 'params' | 'query' | 'headers';
 
 const validationOrder: RequestSegment[] = ['body', 'params', 'query', 'headers'];
 
+export const correlationIdHeaderSchema = Joi.string()
+  .min(1)
+  .max(128)
+  .pattern(/^[!-~]+$/)
+  .optional();
+
+export function getValidCorrelationId(value: unknown) {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  return correlationIdHeaderSchema.validate(value).error ? null : value;
+}
+
 function formatValidationDetails(error: Joi.ValidationError, segment: RequestSegment) {
   return error.details.map((detail) => ({
     path: [segment, ...detail.path].join('.'),
@@ -35,7 +49,7 @@ export function createValidationHandler(validation: RouteRequestValidation = {})
             code: 'VALIDATION_ERROR',
             message: 'Validation failed',
             details: formatValidationDetails(result.error, segment),
-            correlationId: req.headers[CORRELATION_ID_HEADER] ?? null,
+            correlationId: getValidCorrelationId(req.headers[CORRELATION_ID_HEADER]),
           },
         });
       }

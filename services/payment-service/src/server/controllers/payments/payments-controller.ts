@@ -37,4 +37,18 @@ export default class PaymentsController {
       return next(error);
     }
   };
+
+  public capture = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await this.paymentsService.capture({
+        correlationId: String(req.headers[CORRELATION_ID_HEADER]),
+        idempotencyKey: String(req.headers['idempotency-key']),
+        paymentId: req.params.paymentId,
+      });
+
+      return res.status(result.statusCode).json(result.body);
+    } catch (error) {
+      return next(error);
+    }
+  };
 }

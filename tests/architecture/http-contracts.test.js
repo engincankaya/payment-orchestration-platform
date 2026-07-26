@@ -89,7 +89,11 @@ test('OpenAPI generator converts route metadata and Joi schemas into a usable co
             }),
             headers: Joi.object({
               'idempotency-key': Joi.string().min(8).required(),
-              'x-correlation-id': Joi.string().uuid().optional(),
+              'x-correlation-id': Joi.string()
+                .min(1)
+                .max(128)
+                .pattern(/^[!-~]+$/)
+                .optional(),
             }).unknown(true),
             body: Joi.object({
               merchantId: Joi.string().uuid().required(),
@@ -135,13 +139,18 @@ test('OpenAPI generator converts route metadata and Joi schemas into a usable co
       name: 'idempotency-key',
       in: 'header',
       required: true,
-      schema: { type: 'string' },
+      schema: { type: 'string', minLength: 8 },
     },
     {
       name: 'x-correlation-id',
       in: 'header',
       required: false,
-      schema: { type: 'string', format: 'uuid' },
+      schema: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        pattern: '^[!-~]+$',
+      },
     },
   ]);
   assert.deepEqual(operation.requestBody.content['application/json'].schema, {

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 
 import ExternalAuthService from '../../services/auth/external-auth-service';
+import { getValidCorrelationId } from '../validations/common-validations';
 
 export default function apiKeyAuthMiddleware(deps: { externalAuthService: ExternalAuthService }) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -16,7 +17,7 @@ export default function apiKeyAuthMiddleware(deps: { externalAuthService: Extern
             code: 'UNAUTHORIZED',
             message: 'Invalid or missing API key',
             details: null,
-            correlationId: req.headers['x-correlation-id'] ?? null,
+            correlationId: getValidCorrelationId(req.headers['x-correlation-id']),
           },
         });
       }

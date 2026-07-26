@@ -84,6 +84,7 @@ export interface PaymentDto {
   providerPaymentId?: string | null;
   failureCode?: string | null;
   failureMessage?: string | null;
+  capturedAt: string | null;
   createdAt: string;
 }
 
@@ -389,6 +390,7 @@ export default class PaymentsService {
       providerPaymentId: payment.provider_payment_id,
       failureCode: payment.failure_code,
       failureMessage: payment.failure_message,
+      capturedAt: payment.captured_at ? new Date(payment.captured_at).toISOString() : null,
       createdAt: new Date(payment.created_at).toISOString(),
     };
   }

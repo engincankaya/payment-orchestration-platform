@@ -44,4 +44,21 @@ export default class PaymentsController {
       return next(error);
     }
   };
+
+  public capture = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const result = await this.paymentsGatewayService.capture({
+        correlationId: String(req.headers[CORRELATION_ID_HEADER]),
+        idempotencyKey: String(req.headers['idempotency-key']),
+        paymentId: req.params.paymentId,
+      });
+
+      return res.status(result.statusCode).json({
+        data: result.body,
+        correlationId: req.headers[CORRELATION_ID_HEADER],
+      });
+    } catch (error) {
+      return next(error);
+    }
+  };
 }

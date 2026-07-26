@@ -13,6 +13,12 @@ export interface GetPaymentGatewayQuery {
   paymentId: string;
 }
 
+export interface CapturePaymentGatewayCommand {
+  correlationId: string;
+  idempotencyKey: string;
+  paymentId: string;
+}
+
 export default class PaymentsGatewayService {
   private paymentServiceClient: PaymentServiceClient;
 
@@ -26,5 +32,9 @@ export default class PaymentsGatewayService {
 
   public getById = async (query: GetPaymentGatewayQuery) => {
     return this.paymentServiceClient.getById(query);
+  };
+
+  public capture = async (command: CapturePaymentGatewayCommand) => {
+    return this.paymentServiceClient.capture(command);
   };
 }

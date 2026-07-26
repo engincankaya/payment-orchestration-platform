@@ -1,4 +1,6 @@
 /notes/
+/.agents/
+/.codex/
 .env
 node_modules
 dist
