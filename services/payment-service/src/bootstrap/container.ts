@@ -27,6 +27,7 @@ export function buildContainer(
   container.register({
     container: asValue(container),
     env: asValue(process.env),
+    forceExit: asValue((code: number) => process.exit(code)),
     amqpClient: asValue(amqpClient),
     clock: asValue({ now: () => new Date() }),
     knex: asValue(knex),

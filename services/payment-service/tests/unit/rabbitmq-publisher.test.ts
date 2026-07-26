@@ -149,6 +149,27 @@ describe('RabbitMqPublisher', () => {
     expect(channel.publish).not.toHaveBeenCalled();
   });
 
+  it('does not count a synchronous closed-channel publish rejection as attempted', async () => {
+    const channelClosedError = new Error('Channel closed');
+    const {
+      subject,
+      channel,
+      rabbitMqConnectionManager,
+    } = createSubject({}, () => {
+      throw channelClosedError;
+    });
+
+    const publishing = subject.publish(buildEvent());
+
+    await expect(publishing).rejects.toBeInstanceOf(
+      RabbitMqPublishNotAttemptedError,
+    );
+    expect(channel.publish).toHaveBeenCalledTimes(1);
+    expect(rabbitMqConnectionManager.invalidateChannel).toHaveBeenCalledWith(
+      channel,
+    );
+  });
+
   it('treats a returned mandatory message as failure even when broker confirm succeeds', async () => {
     const { subject, channel } = createSubject({}, (
       _exchange,

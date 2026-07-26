@@ -16,18 +16,25 @@ type BootstrapLifecycleState =
   | 'stopping'
   | 'stopped';
 
+export interface ForceExitPort {
+  /** Terminates the process when graceful resource cleanup exceeds its deadline. */
+  (code: number): void;
+}
+
 export default class PaymentServiceBootstrap {
   private readonly server: ServerApplication;
   private readonly outboxPublisherWorker: OutboxPublisherWorker;
   private readonly rabbitMqConnectionManager: RabbitMqConnectionManager;
   private readonly knex: Knex;
   private readonly logger: Logger;
+  private readonly forceExit: ForceExitPort;
   private readonly port: number;
   private readonly shutdownGraceMs: number;
   private httpServer: HttpServer | null = null;
   private bootstrapPromise: Promise<void> | null = null;
   private shutdownPromise: Promise<void> | null = null;
   private rabbitMqClosePromise: Promise<void> | null = null;
+  private knexDestroyPromise: Promise<void> | null = null;
   private lifecycleState: BootstrapLifecycleState = 'idle';
 
   constructor(deps: {
@@ -37,12 +44,14 @@ export default class PaymentServiceBootstrap {
     outboxPublisherWorker: OutboxPublisherWorker;
     rabbitMqConnectionManager: RabbitMqConnectionManager;
     server: ServerApplication;
+    forceExit: ForceExitPort;
   }) {
     this.server = deps.server;
     this.outboxPublisherWorker = deps.outboxPublisherWorker;
     this.rabbitMqConnectionManager = deps.rabbitMqConnectionManager;
     this.knex = deps.knex;
     this.logger = deps.logger;
+    this.forceExit = deps.forceExit;
     this.port = Number(deps.env.PORT ?? 8080);
     this.shutdownGraceMs = this.parsePositiveInteger(
       deps.env.OUTBOX_SHUTDOWN_GRACE_MS,
@@ -81,12 +90,20 @@ export default class PaymentServiceBootstrap {
     return this.shutdownPromise;
   };
 
-  /** Routes a process signal through the idempotent shutdown path. */
+  /** Routes a process signal through bounded shutdown with a forced-exit fallback. */
   public handleSignal = async (
     signal: 'SIGTERM' | 'SIGINT',
   ): Promise<void> => {
     this.logger.info(`Received ${signal}; shutting down payment-service`);
-    await this.shutdown();
+    const hardStopTimer = setTimeout(
+      this.forceShutdownAfterDeadline,
+      this.shutdownGraceMs,
+    );
+    try {
+      await this.shutdown();
+    } finally {
+      clearTimeout(hardStopTimer);
+    }
   };
 
   private start = async () => {
@@ -123,7 +140,7 @@ export default class PaymentServiceBootstrap {
       firstError ??= error;
     }
     try {
-      await this.knex.destroy();
+      await this.closeKnex();
     } catch (error) {
       firstError ??= error;
     }
@@ -138,10 +155,17 @@ export default class PaymentServiceBootstrap {
       return;
     }
     const httpServer = this.httpServer;
-    this.httpServer = null;
-    await new Promise<void>((resolve, reject) => {
+    const closePromise = new Promise<void>((resolve, reject) => {
       httpServer.close((error) => error ? reject(error) : resolve());
     });
+    const closedWithinGrace = await this.settlesWithinGrace(closePromise);
+    if (!closedWithinGrace) {
+      this.forceCloseHttpConnections(httpServer);
+      await closePromise;
+    }
+    if (this.httpServer === httpServer) {
+      this.httpServer = null;
+    }
   };
 
   private settlesWithinGrace = async (operation: Promise<void>) => {
@@ -165,6 +189,35 @@ export default class PaymentServiceBootstrap {
       this.rabbitMqClosePromise = this.rabbitMqConnectionManager.close();
     }
     return this.rabbitMqClosePromise;
+  };
+
+  private closeKnex = async () => {
+    if (!this.knexDestroyPromise) {
+      this.knexDestroyPromise = this.knex.destroy();
+    }
+    return this.knexDestroyPromise;
+  };
+
+  private forceCloseHttpConnections(httpServer: HttpServer) {
+    if (this.httpServer === httpServer) {
+      this.httpServer = null;
+    }
+    httpServer.closeAllConnections();
+  }
+
+  private forceShutdownAfterDeadline = () => {
+    const httpServer = this.httpServer;
+    if (httpServer) {
+      this.forceCloseHttpConnections(httpServer);
+    }
+    void this.closeRabbitMq().catch((error) => {
+      this.logger.error('RabbitMQ forced shutdown failed', { error });
+    });
+    void this.closeKnex().catch((error) => {
+      this.logger.error('Knex forced shutdown failed', { error });
+    });
+    this.logger.error('Payment service shutdown grace expired; forcing exit');
+    this.forceExit(1);
   };
 
   private parsePositiveInteger(

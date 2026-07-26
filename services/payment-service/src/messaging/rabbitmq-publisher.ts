@@ -106,7 +106,8 @@ export default class RabbitMqPublisher {
           },
         );
       } catch (error) {
-        settle(this.toError(error));
+        void this.rabbitMqConnectionManager.invalidateChannel(channel);
+        settle(new RabbitMqPublishNotAttemptedError(error));
       }
     });
   };

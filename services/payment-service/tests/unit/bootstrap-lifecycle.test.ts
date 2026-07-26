@@ -9,16 +9,28 @@ function deferred<T = void>() {
 }
 
 function createSubject(options: {
+  holdHttpClose?: boolean;
+  knexDestroy?: () => Promise<void>;
   listenGate?: { promise: Promise<void> };
-  workerStart?: () => Promise<void>;
   workerStop?: () => Promise<void>;
+  workerStart?: () => Promise<void>;
   shutdownGraceMs?: string;
 } = {}) {
   const sequence: string[] = [];
+  const httpCloseGate = deferred();
   const httpServer = {
     close: jest.fn().mockImplementation((callback?: (error?: Error) => void) => {
       sequence.push('http:close');
-      callback?.();
+      if (options.holdHttpClose) {
+        void httpCloseGate.promise.then(() => callback?.());
+      } else {
+        callback?.();
+      }
+      return httpServer;
+    }),
+    closeAllConnections: jest.fn().mockImplementation(() => {
+      sequence.push('http:close-all');
+      httpCloseGate.resolve();
       return httpServer;
     }),
   };
@@ -50,10 +62,13 @@ function createSubject(options: {
     }),
   };
   const knex = {
-    destroy: jest.fn().mockImplementation(async () => {
+    destroy: jest.fn().mockImplementation(options.knexDestroy ?? (async () => {
       sequence.push('knex:destroy');
-    }),
+    })),
   };
+  const forceExit = jest.fn().mockImplementation((_code: number) => {
+    sequence.push('process:force-exit');
+  });
   const logger = {
     error: jest.fn(),
     warn: jest.fn(),
@@ -72,6 +87,7 @@ function createSubject(options: {
     knex,
     logger,
     env,
+    forceExit,
   } as never);
 
   return {
@@ -81,6 +97,8 @@ function createSubject(options: {
     outboxPublisherWorker,
     rabbitMqConnectionManager,
     knex,
+    forceExit,
+    httpCloseGate,
     logger,
     sequence,
   };
@@ -165,6 +183,68 @@ describe('PaymentServiceBootstrap', () => {
       'rabbitmq:close',
       'knex:destroy',
     ]);
+  });
+
+  it('forces active HTTP connections closed after the grace and continues teardown', async () => {
+    jest.useFakeTimers();
+    const {
+      subject,
+      httpServer,
+      httpCloseGate,
+      outboxPublisherWorker,
+      rabbitMqConnectionManager,
+      knex,
+    } = createSubject({
+      holdHttpClose: true,
+      shutdownGraceMs: '25',
+    });
+    await subject.bootstrap();
+
+    const shuttingDown = subject.shutdown();
+    await jest.advanceTimersByTimeAsync(24);
+    expect(httpServer.closeAllConnections).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1);
+    httpCloseGate.resolve();
+    await shuttingDown;
+
+    expect(httpServer.closeAllConnections).toHaveBeenCalledTimes(1);
+    expect(outboxPublisherWorker.stop).toHaveBeenCalledTimes(1);
+    expect(rabbitMqConnectionManager.close).toHaveBeenCalledTimes(1);
+    expect(knex.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('forces process termination when worker and database teardown cannot settle', async () => {
+    jest.useFakeTimers();
+    const workerStop = deferred();
+    const knexDestroy = deferred();
+    const {
+      subject,
+      forceExit,
+      rabbitMqConnectionManager,
+      knex,
+    } = createSubject({
+      workerStop: () => workerStop.promise,
+      knexDestroy: () => knexDestroy.promise,
+      shutdownGraceMs: '25',
+    });
+    await subject.bootstrap();
+
+    const handlingSignal = subject.handleSignal('SIGTERM');
+    await jest.advanceTimersByTimeAsync(24);
+    expect(forceExit).not.toHaveBeenCalled();
+
+    await jest.advanceTimersByTimeAsync(1);
+    const forceExitCalls = forceExit.mock.calls;
+    const rabbitMqCloseCalls = rabbitMqConnectionManager.close.mock.calls;
+    const knexDestroyCalls = knex.destroy.mock.calls;
+    workerStop.resolve();
+    knexDestroy.resolve();
+    await handlingSignal;
+
+    expect(rabbitMqCloseCalls).toHaveLength(1);
+    expect(knexDestroyCalls).toHaveLength(1);
+    expect(forceExitCalls).toEqual([[1]]);
   });
 
   it('uses the default 30000 ms shutdown grace', async () => {
