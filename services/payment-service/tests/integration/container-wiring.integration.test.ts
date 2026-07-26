@@ -6,6 +6,10 @@ import { buildContainer } from '../../src/bootstrap/container';
 import type PaymentsService from '../../src/services/payments/payments-service';
 import type OutboxService from '../../src/services/outbox/outbox-service';
 import type ServerApplication from '../../src/server/server';
+import type RabbitMqConnectionManager from '../../src/messaging/rabbitmq-connection-manager';
+import type RabbitMqPublisher from '../../src/messaging/rabbitmq-publisher';
+import type OutboxPublisherWorker from '../../src/workers/outbox-publisher-worker';
+import type PaymentServiceBootstrap from '../../src/bootstrap/payment-service-bootstrap';
 
 const postgresUser = 'container_wiring_test';
 const postgresPassword = 'container_wiring_test';
@@ -61,5 +65,38 @@ describe('Payment Service container outbox wiring', () => {
     expect(paymentsService).toBeDefined();
     expect(firstOutboxService).toBe(secondOutboxService);
     expect(firstDataAccess).toBe(secondDataAccess);
+  });
+
+  it('resolves messaging, worker, and bootstrap dependencies as singletons', () => {
+    const container = buildContainer({
+      env: asValue({
+        INTERNAL_SERVICE_TOKEN: 'container-wiring-token',
+        SERVICE_NAME: 'payment-service-test',
+        RABBITMQ_URL: 'amqp://rabbitmq.invalid:5672',
+      }),
+      knex: asValue(knex),
+    });
+
+    const firstManager = container.resolve<RabbitMqConnectionManager>(
+      'rabbitMqConnectionManager',
+    );
+    const secondManager = container.resolve<RabbitMqConnectionManager>(
+      'rabbitMqConnectionManager',
+    );
+    const firstPublisher = container.resolve<RabbitMqPublisher>('rabbitMqPublisher');
+    const secondPublisher = container.resolve<RabbitMqPublisher>('rabbitMqPublisher');
+    const firstWorker = container.resolve<OutboxPublisherWorker>('outboxPublisherWorker');
+    const secondWorker = container.resolve<OutboxPublisherWorker>('outboxPublisherWorker');
+    const firstBootstrap = container.resolve<PaymentServiceBootstrap>(
+      'paymentServiceBootstrap',
+    );
+    const secondBootstrap = container.resolve<PaymentServiceBootstrap>(
+      'paymentServiceBootstrap',
+    );
+
+    expect(firstManager).toBe(secondManager);
+    expect(firstPublisher).toBe(secondPublisher);
+    expect(firstWorker).toBe(secondWorker);
+    expect(firstBootstrap).toBe(secondBootstrap);
   });
 });

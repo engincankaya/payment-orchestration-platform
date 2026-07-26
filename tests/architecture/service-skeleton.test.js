@@ -58,10 +58,12 @@ test('each service exposes a health route in its bootstrap server', () => {
 
 test('http services default to production-like container port 8080', () => {
   for (const serviceName of expectedServices) {
-    const indexSource = readFile(`services/${serviceName}/src/index.ts`);
+    const startupSource = serviceName === 'payment-service'
+      ? readFile('services/payment-service/src/bootstrap/payment-service-bootstrap.ts')
+      : readFile(`services/${serviceName}/src/index.ts`);
     const dockerfileSource = readFile(`services/${serviceName}/Dockerfile`);
 
-    assert.match(indexSource, /process\.env\.PORT \?\? 8080/);
+    assert.match(startupSource, /env\.PORT \?\? 8080/);
     assert.match(dockerfileSource, /EXPOSE 8080/);
   }
 });
