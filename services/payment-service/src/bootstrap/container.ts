@@ -8,10 +8,10 @@ import {
   Lifetime,
   NameAndRegistrationPair,
 } from 'awilix';
-import * as amqpClient from 'amqplib';
 
 import knex from './knex/knex';
 import PaymentServiceBootstrap from './payment-service-bootstrap';
+import amqpClient from '../messaging/amqp-client';
 import RabbitMqConnectionManager from '../messaging/rabbitmq-connection-manager';
 import RabbitMqPublisher from '../messaging/rabbitmq-publisher';
 import ServerApplication from '../server/server';
