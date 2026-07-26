@@ -11,6 +11,7 @@ import * as createIdempotencyKeysMigration from '../../src/bootstrap/knex/migrat
 import * as addIdempotencyLeaseMetadata from '../../src/bootstrap/knex/migrations/003_add_idempotency_lease_metadata';
 import * as hardenPaymentIntegrity from '../../src/bootstrap/knex/migrations/004_harden_payment_integrity';
 import * as addIdempotencyProcessingToken from '../../src/bootstrap/knex/migrations/005_add_idempotency_processing_token';
+import * as createOutboxEventsMigration from '../../src/bootstrap/knex/migrations/006_create_outbox_events';
 import IdempotencyDataAccess from '../../src/data-access/idempotency/idempotency-data-access';
 import { AMOUNT_MINOR_MAX } from '../../src/server/routes/payments/payments';
 import ServerApplication from '../../src/server/server';
@@ -89,7 +90,11 @@ function createProviderRegistryMock() {
 }
 
 async function truncateTables(knex: Knex) {
-  await knex.raw('TRUNCATE TABLE idempotency_keys, payments RESTART IDENTITY CASCADE');
+  const hasOutbox = await knex.schema.hasTable('outbox_events');
+  const tables = hasOutbox
+    ? 'outbox_events, idempotency_keys, payments'
+    : 'idempotency_keys, payments';
+  await knex.raw(`TRUNCATE TABLE ${tables} RESTART IDENTITY CASCADE`);
 }
 
 describe('Payment Service idempotency integration', () => {
@@ -112,6 +117,7 @@ describe('Payment Service idempotency integration', () => {
     await addIdempotencyLeaseMetadata.up(knex);
     await hardenPaymentIntegrity.up(knex);
     await addIdempotencyProcessingToken.up(knex);
+    await createOutboxEventsMigration.up(knex);
   }, 120_000);
 
   afterAll(async () => {
