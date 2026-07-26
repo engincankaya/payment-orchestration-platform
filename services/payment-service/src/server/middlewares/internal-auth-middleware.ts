@@ -1,6 +1,8 @@
 import { NextFunction, Request, Response } from 'express';
 
+import { CORRELATION_ID_HEADER } from '../../constants';
 import timingSafeEquals from '../../utils/timing-safe-equals';
+import { getValidCorrelationId } from '../validations/common-validations';
 
 export default function internalAuthMiddleware(deps: { env: NodeJS.ProcessEnv }) {
   // Missing internal auth config must fail during route wiring, before the service accepts traffic.
@@ -21,7 +23,9 @@ export default function internalAuthMiddleware(deps: { env: NodeJS.ProcessEnv })
         return res.status(401).json({
           error: {
             code: 'UNAUTHORIZED',
-            message: 'Unauthorized internal request',
+            message: 'Invalid or missing internal token',
+            details: null,
+            correlationId: getValidCorrelationId(req.headers[CORRELATION_ID_HEADER]),
           },
         });
       }

@@ -1,4 +1,6 @@
-import { Knex } from 'knex';
+import type { Knex } from 'knex';
+
+import type { TransactionContext } from './transaction-manager';
 
 export default abstract class BaseDataAccess<TRecord extends object> {
   protected knex: Knex;
@@ -9,7 +11,7 @@ export default abstract class BaseDataAccess<TRecord extends object> {
     this.tableName = tableName;
   }
 
-  protected query(trx?: Knex.Transaction) {
+  protected query(trx?: TransactionContext) {
     const client = trx ?? this.knex;
     return client<TRecord>(this.tableName);
   }

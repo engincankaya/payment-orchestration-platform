@@ -1,16 +1,44 @@
+import type {
+  TransactionContext,
+  TransactionManagerPort,
+} from '../../src/data-access/transaction-manager';
 import PaymentsService, {
   IdempotencyServicePort,
+  OutboxServicePort,
+  PaymentStateServicePort,
   PaymentsDataAccessPort,
   ProviderRegistryServicePort,
 } from '../../src/services/payments/payments-service';
+import ApiError from '../../src/types/errors/api-error';
 import { Logger } from '../../src/utils/logger';
+
+const processingToken = '11111111-1111-4111-8111-111111111111';
+const defaultTrx = { trx: true } as unknown as TransactionContext;
+
+type Assert<T extends true> = T;
+type OutboxDependencyMustBeRequired = Assert<
+  {} extends Pick<ConstructorParameters<typeof PaymentsService>[0], 'outboxService'>
+    ? false
+    : true
+>;
 
 const makePaymentsDataAccessMock = (
   overrides: Partial<jest.Mocked<PaymentsDataAccessPort>> = {},
 ): jest.Mocked<PaymentsDataAccessPort> => ({
   insert: jest.fn(),
   findById: jest.fn(),
-  withTransaction: jest.fn().mockImplementation((handler) => handler({ trx: true })),
+  findByIdForUpdate: jest.fn(),
+  updateStatusIfAuthorized: jest.fn(),
+  ...overrides,
+});
+
+const makeTransactionManagerMock = (
+  trx: TransactionContext = defaultTrx,
+  overrides: Partial<jest.Mocked<TransactionManagerPort>> = {},
+): jest.Mocked<TransactionManagerPort> => ({
+  run: jest.fn().mockImplementation(
+    async <T>(handler: (transaction: TransactionContext) => Promise<T>) => handler(trx),
+  ),
   ...overrides,
 });
 
@@ -22,6 +50,7 @@ const makeIdempotencyServiceMock = (
     type: 'STARTED',
     recordId: 'idem-1',
     resourceId: 'payment-1',
+    processingToken,
   }),
   markCompleted: jest.fn().mockResolvedValue(null),
   markFailed: jest.fn().mockResolvedValue(null),
@@ -39,6 +68,24 @@ const makeProviderRegistryMock = (
     }),
     capture: jest.fn(),
   }),
+  getProvider: jest.fn(),
+  ...overrides,
+});
+
+const makePaymentStateServiceMock = (
+  overrides: Partial<jest.Mocked<PaymentStateServicePort>> = {},
+): jest.Mocked<PaymentStateServicePort> => ({
+  ensureCanCapture: jest.fn(),
+  ensureTransition: jest.fn(),
+  ...overrides,
+});
+
+const makeOutboxServiceMock = (
+  overrides: Partial<jest.Mocked<OutboxServicePort>> = {},
+): jest.Mocked<OutboxServicePort> => ({
+  recordPaymentAuthorized: jest.fn().mockResolvedValue(undefined),
+  recordPaymentCaptured: jest.fn().mockResolvedValue(undefined),
+  recordPaymentFailed: jest.fn().mockResolvedValue(undefined),
   ...overrides,
 });
 
@@ -52,13 +99,33 @@ const makeService = (deps?: {
   paymentsDataAccess?: jest.Mocked<PaymentsDataAccessPort>;
   idempotencyService?: jest.Mocked<IdempotencyServicePort>;
   providerRegistryService?: jest.Mocked<ProviderRegistryServicePort>;
+  paymentStateService?: jest.Mocked<PaymentStateServicePort>;
+  outboxService?: jest.Mocked<OutboxServicePort>;
+  transactionManager?: jest.Mocked<TransactionManagerPort>;
   logger?: jest.Mocked<Logger>;
 }) =>
   new PaymentsService({
     paymentsDataAccess: deps?.paymentsDataAccess ?? makePaymentsDataAccessMock(),
     idempotencyService: deps?.idempotencyService ?? makeIdempotencyServiceMock(),
     providerRegistryService: deps?.providerRegistryService ?? makeProviderRegistryMock(),
+    paymentStateService: deps?.paymentStateService ?? makePaymentStateServiceMock(),
+    outboxService: deps?.outboxService ?? makeOutboxServiceMock(),
+    transactionManager: deps?.transactionManager ?? makeTransactionManagerMock(),
     logger: deps?.logger ?? makeLoggerMock(),
+  });
+
+const expectCalledBefore = (
+  first: { mock: { invocationCallOrder: number[] } },
+  second: { mock: { invocationCallOrder: number[] } },
+) => {
+  expect(first.mock.invocationCallOrder[0]).toBeLessThan(second.mock.invocationCallOrder[0]);
+};
+
+const ownershipLostError = () =>
+  new ApiError({
+    code: 'IDEMPOTENCY_OWNERSHIP_LOST',
+    message: 'Idempotency ownership was lost',
+    statusCode: 409,
   });
 
 describe('PaymentsService idempotency', () => {
@@ -76,13 +143,14 @@ describe('PaymentsService idempotency', () => {
       createdAt: '2026-07-08T00:00:00.000Z',
     };
     const insert = jest.fn();
-    const withTransaction = jest.fn();
+    const transactionManager = makeTransactionManagerMock();
     const markCompleted = jest.fn();
     const getDefaultProvider = jest.fn();
+    const paymentStateService = makePaymentStateServiceMock();
+    const outboxService = makeOutboxServiceMock();
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
         insert,
-        withTransaction,
       }),
       idempotencyService: makeIdempotencyServiceMock({
         getExistingOrStart: jest.fn().mockResolvedValue({
@@ -95,6 +163,9 @@ describe('PaymentsService idempotency', () => {
       providerRegistryService: makeProviderRegistryMock({
         getDefaultProvider,
       }),
+      paymentStateService,
+      outboxService,
+      transactionManager,
     });
 
     await expect(
@@ -111,13 +182,16 @@ describe('PaymentsService idempotency', () => {
     });
 
     expect(insert).not.toHaveBeenCalled();
-    expect(withTransaction).not.toHaveBeenCalled();
+    expect(transactionManager.run).not.toHaveBeenCalled();
     expect(markCompleted).not.toHaveBeenCalled();
     expect(getDefaultProvider).not.toHaveBeenCalled();
+    expect(paymentStateService.ensureTransition).not.toHaveBeenCalled();
+    expect(outboxService.recordPaymentAuthorized).not.toHaveBeenCalled();
+    expect(outboxService.recordPaymentFailed).not.toHaveBeenCalled();
   });
 
-  it('stores successful payment response in idempotency record', async () => {
-    const trx = { trx: true };
+  it('stores successful payment response and authorized outbox event in the same transaction', async () => {
+    const trx = { trx: true } as unknown as TransactionContext;
     const authorize = jest.fn().mockResolvedValue({
       success: true,
       provider: 'mock',
@@ -133,11 +207,13 @@ describe('PaymentsService idempotency', () => {
       type: 'STARTED',
       recordId: 'idem-1',
       resourceId: 'payment-1',
+      processingToken,
     });
+    const paymentStateService = makePaymentStateServiceMock();
+    const outboxService = makeOutboxServiceMock();
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
         insert,
-        withTransaction: jest.fn().mockImplementation((handler) => handler(trx)),
       }),
       idempotencyService: makeIdempotencyServiceMock({
         getExistingOrStart,
@@ -149,6 +225,9 @@ describe('PaymentsService idempotency', () => {
           capture: jest.fn(),
         }),
       }),
+      paymentStateService,
+      outboxService,
+      transactionManager: makeTransactionManagerMock(trx),
     });
 
     const result = await service.create({
@@ -181,23 +260,39 @@ describe('PaymentsService idempotency', () => {
     );
     expect(markCompleted).toHaveBeenCalledWith({
       idempotencyRecordId: 'idem-1',
+      processingToken,
       resourceType: 'payment',
       resourceId: result.body.id,
       responseStatusCode: 201,
       responseBody: result.body,
       trx,
     });
+    expect(outboxService.recordPaymentAuthorized).toHaveBeenCalledWith(
+      {
+        correlationId: 'correlation-1',
+        payment: expect.objectContaining({
+          id: 'payment-1',
+          status: 'AUTHORIZED',
+        }),
+      },
+      trx,
+    );
+    expectCalledBefore(outboxService.recordPaymentAuthorized, markCompleted);
   });
 
-  it('stores provider authorization failure response as completed idempotency result', async () => {
+  it('stores authorization failure response and failed outbox event in the same transaction', async () => {
+    const trx = { trx: true } as unknown as TransactionContext;
     const markCompleted = jest.fn();
+    const insert = jest.fn().mockImplementation(async (record) => ({
+      ...record,
+      created_at: '2026-07-08T00:00:00.000Z',
+      updated_at: '2026-07-08T00:00:00.000Z',
+    }));
+    const paymentStateService = makePaymentStateServiceMock();
+    const outboxService = makeOutboxServiceMock();
     const service = makeService({
       paymentsDataAccess: makePaymentsDataAccessMock({
-        insert: jest.fn().mockImplementation(async (record) => ({
-          ...record,
-          created_at: '2026-07-08T00:00:00.000Z',
-          updated_at: '2026-07-08T00:00:00.000Z',
-        })),
+        insert,
       }),
       idempotencyService: makeIdempotencyServiceMock({
         markCompleted,
@@ -213,6 +308,9 @@ describe('PaymentsService idempotency', () => {
           capture: jest.fn(),
         }),
       }),
+      paymentStateService,
+      outboxService,
+      transactionManager: makeTransactionManagerMock(trx),
     });
 
     const result = await service.create({
@@ -236,6 +334,214 @@ describe('PaymentsService idempotency', () => {
         responseStatusCode: 201,
       }),
     );
+    expect(outboxService.recordPaymentFailed).toHaveBeenCalledWith(
+      {
+        correlationId: 'correlation-1',
+        operation: 'AUTHORIZE',
+        payment: expect.objectContaining({
+          id: 'payment-1',
+          status: 'FAILED',
+          failure_code: 'MOCK_AUTHORIZATION_FAILED',
+        }),
+      },
+      trx,
+    );
+    expectCalledBefore(outboxService.recordPaymentFailed, markCompleted);
+  });
+
+  it.each([
+    {
+      caseName: 'authorization success',
+      amountMinor: 1000,
+      authorization: {
+        success: true,
+        provider: 'mock',
+        providerPaymentId: 'provider-payment-1',
+      },
+      targetStatus: 'AUTHORIZED',
+    },
+    {
+      caseName: 'authorization failure',
+      amountMinor: 9999,
+      authorization: {
+        success: false,
+        provider: 'mock',
+        failureCode: 'MOCK_AUTHORIZATION_FAILED',
+        failureMessage: 'Mock provider authorization failure',
+      },
+      targetStatus: 'FAILED',
+    },
+  ])(
+    'validates CREATED -> $targetStatus before persistence for $caseName',
+    async ({ amountMinor, authorization, targetStatus }) => {
+      const insert = jest.fn().mockImplementation(async (record) => ({
+        ...record,
+        created_at: '2026-07-08T00:00:00.000Z',
+        updated_at: '2026-07-08T00:00:00.000Z',
+      }));
+      const paymentStateService = makePaymentStateServiceMock();
+      const service = makeService({
+        paymentsDataAccess: makePaymentsDataAccessMock({ insert }),
+        providerRegistryService: makeProviderRegistryMock({
+          getDefaultProvider: jest.fn().mockReturnValue({
+            authorize: jest.fn().mockResolvedValue(authorization),
+            capture: jest.fn(),
+          }),
+        }),
+        paymentStateService,
+      });
+
+      await service.create({
+        correlationId: 'correlation-1',
+        idempotencyKey: 'idem-key-1',
+        merchantId: 'merchant-1',
+        amountMinor,
+        currency: 'TRY',
+      });
+
+      expect(paymentStateService.ensureTransition).toHaveBeenCalledWith(
+        'CREATED',
+        targetStatus,
+      );
+      expectCalledBefore(paymentStateService.ensureTransition, insert);
+    },
+  );
+
+  it.each([
+    {
+      caseName: 'authorization success',
+      amountMinor: 1000,
+      authorization: {
+        success: true,
+        provider: 'mock',
+        providerPaymentId: 'provider-payment-1',
+      },
+      failingMethod: 'recordPaymentAuthorized' as const,
+    },
+    {
+      caseName: 'authorization failure',
+      amountMinor: 9999,
+      authorization: {
+        success: false,
+        provider: 'mock',
+        failureCode: 'MOCK_AUTHORIZATION_FAILED',
+        failureMessage: 'Mock provider authorization failure',
+      },
+      failingMethod: 'recordPaymentFailed' as const,
+    },
+  ])(
+    'preserves the outbox error and marks idempotency failed for $caseName',
+    async ({ amountMinor, authorization, failingMethod }) => {
+      const outboxError = new Error('outbox unavailable');
+      const outboxService = makeOutboxServiceMock();
+      outboxService[failingMethod].mockRejectedValue(outboxError);
+      const markCompleted = jest.fn();
+      const markFailed = jest.fn().mockResolvedValue(undefined);
+      const service = makeService({
+        paymentsDataAccess: makePaymentsDataAccessMock({
+          insert: jest.fn().mockImplementation(async (record) => ({
+            ...record,
+            created_at: '2026-07-08T00:00:00.000Z',
+            updated_at: '2026-07-08T00:00:00.000Z',
+          })),
+        }),
+        idempotencyService: makeIdempotencyServiceMock({
+          markCompleted,
+          markFailed,
+        }),
+        providerRegistryService: makeProviderRegistryMock({
+          getDefaultProvider: jest.fn().mockReturnValue({
+            authorize: jest.fn().mockResolvedValue(authorization),
+            capture: jest.fn(),
+          }),
+        }),
+        outboxService,
+      });
+
+      await expect(
+        service.create({
+          correlationId: 'correlation-1',
+          idempotencyKey: 'idem-key-1',
+          merchantId: 'merchant-1',
+          amountMinor,
+          currency: 'TRY',
+        }),
+      ).rejects.toBe(outboxError);
+
+      expect(outboxService[failingMethod]).toHaveBeenCalledTimes(1);
+      expect(markCompleted).not.toHaveBeenCalled();
+      expect(markFailed).toHaveBeenCalledWith({
+        idempotencyRecordId: 'idem-1',
+        processingToken,
+      });
+    },
+  );
+
+  it('rejects stale completion so the create transaction cannot commit payment and outbox state', async () => {
+    const trx = { trx: true } as unknown as TransactionContext;
+    let committed = false;
+    let rolledBack = false;
+    const transactionManager = makeTransactionManagerMock(trx, {
+      run: jest.fn().mockImplementation(async (handler) => {
+        try {
+          const result = await handler(trx);
+          committed = true;
+          return result;
+        } catch (error) {
+          rolledBack = true;
+          throw error;
+        }
+      }),
+    });
+    const markCompleted = jest.fn().mockRejectedValue(ownershipLostError());
+    const markFailed = jest.fn().mockRejectedValue(ownershipLostError());
+    const outboxService = makeOutboxServiceMock();
+    const service = makeService({
+      paymentsDataAccess: makePaymentsDataAccessMock({
+        insert: jest.fn().mockImplementation(async (record) => ({
+          ...record,
+          created_at: '2026-07-08T00:00:00.000Z',
+          updated_at: '2026-07-08T00:00:00.000Z',
+        })),
+      }),
+      idempotencyService: makeIdempotencyServiceMock({
+        markCompleted,
+        markFailed,
+      }),
+      outboxService,
+      transactionManager,
+    });
+
+    await expect(
+      service.create({
+        correlationId: 'correlation-1',
+        idempotencyKey: 'idem-key-1',
+        merchantId: 'merchant-1',
+        amountMinor: 1000,
+        currency: 'TRY',
+      }),
+    ).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_OWNERSHIP_LOST',
+      statusCode: 409,
+    });
+
+    expect(outboxService.recordPaymentAuthorized).toHaveBeenCalledWith(
+      {
+        correlationId: 'correlation-1',
+        payment: expect.objectContaining({ id: 'payment-1', status: 'AUTHORIZED' }),
+      },
+      trx,
+    );
+    expect(markCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({ processingToken, trx }),
+    );
+    expect(markFailed).toHaveBeenCalledWith({
+      idempotencyRecordId: 'idem-1',
+      processingToken,
+    });
+    expect(transactionManager.run).toHaveBeenCalledTimes(1);
+    expect(rolledBack).toBe(true);
+    expect(committed).toBe(false);
   });
 
   it('marks idempotency record failed when payment persistence fails', async () => {
@@ -260,7 +566,10 @@ describe('PaymentsService idempotency', () => {
       }),
     ).rejects.toThrow('database unavailable');
 
-    expect(markFailed).toHaveBeenCalledWith({ idempotencyRecordId: 'idem-1' });
+    expect(markFailed).toHaveBeenCalledWith({
+      idempotencyRecordId: 'idem-1',
+      processingToken,
+    });
   });
 
   it('keeps the original create error when marking idempotency failed also fails', async () => {
@@ -286,7 +595,10 @@ describe('PaymentsService idempotency', () => {
       }),
     ).rejects.toThrow('database unavailable');
 
-    expect(markFailed).toHaveBeenCalledWith({ idempotencyRecordId: 'idem-1' });
+    expect(markFailed).toHaveBeenCalledWith({
+      idempotencyRecordId: 'idem-1',
+      processingToken,
+    });
     expect(logger.error).toHaveBeenCalledWith(
       'Failed to mark idempotency record as failed',
       expect.objectContaining({
@@ -317,6 +629,7 @@ describe('PaymentsService idempotency', () => {
           type: 'STARTED',
           recordId: 'idem-1',
           resourceId: 'reserved-payment-1',
+          processingToken,
         }),
       }),
       providerRegistryService: makeProviderRegistryMock({

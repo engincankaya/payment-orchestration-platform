@@ -161,6 +161,70 @@ describe('PaymentServiceClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('captures through the internal payment endpoint with required tracing headers', async () => {
+    const paymentResponse = {
+      id: '9cfd22b0-c416-45a5-8f93-ed066ac3c3cf',
+      status: 'CAPTURED',
+    };
+    const fetchMock = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: jest.fn().mockResolvedValue(paymentResponse),
+    });
+    const client = createClient(fetchMock);
+
+    await expect(client.capture({
+      correlationId: 'correlation-capture-1',
+      idempotencyKey: 'idem-capture-1',
+      paymentId: paymentResponse.id,
+    })).resolves.toEqual({
+      statusCode: 200,
+      body: paymentResponse,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      `http://payment-service.test/internal/payments/${paymentResponse.id}/capture`,
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'idempotency-key': 'idem-capture-1',
+          'x-correlation-id': 'correlation-capture-1',
+          'x-internal-token': 'internal-token',
+        }),
+        body: undefined,
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  });
+
+  it.each([
+    {
+      error: Object.assign(new Error('operation timed out'), { name: 'TimeoutError' }),
+      statusCode: 504,
+      code: 'PAYMENT_SERVICE_TIMEOUT',
+    },
+    {
+      error: new Error('ECONNREFUSED'),
+      statusCode: 502,
+      code: 'PAYMENT_SERVICE_UNAVAILABLE',
+    },
+  ])(
+    'maps capture transport failure to $statusCode without retrying',
+    async ({ error, statusCode, code }) => {
+      const fetchMock = jest.fn().mockRejectedValue(error);
+      const client = createClient(fetchMock);
+
+      await expect(client.capture({
+        correlationId: 'correlation-capture-1',
+        idempotencyKey: 'idem-capture-1',
+        paymentId: '9cfd22b0-c416-45a5-8f93-ed066ac3c3cf',
+      })).rejects.toMatchObject({ statusCode, code });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('passes an abort signal to outbound payment service requests', async () => {
     const fetchMock = jest.fn().mockResolvedValue({
       ok: true,

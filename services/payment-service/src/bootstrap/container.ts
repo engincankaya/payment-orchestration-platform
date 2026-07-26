@@ -10,6 +10,10 @@ import {
 } from 'awilix';
 
 import knex from './knex/knex';
+import PaymentServiceBootstrap from './payment-service-bootstrap';
+import amqpClient from '../messaging/amqp-client';
+import RabbitMqConnectionManager from '../messaging/rabbitmq-connection-manager';
+import RabbitMqPublisher from '../messaging/rabbitmq-publisher';
 import ServerApplication from '../server/server';
 import logger from '../utils/logger';
 
@@ -23,8 +27,14 @@ export function buildContainer(
   container.register({
     container: asValue(container),
     env: asValue(process.env),
+    forceExit: asValue((code: number) => process.exit(code)),
+    amqpClient: asValue(amqpClient),
+    clock: asValue({ now: () => new Date() }),
     knex: asValue(knex),
     logger: asFunction(logger).singleton(),
+    paymentServiceBootstrap: asClass(PaymentServiceBootstrap).singleton(),
+    rabbitMqConnectionManager: asClass(RabbitMqConnectionManager).singleton(),
+    rabbitMqPublisher: asClass(RabbitMqPublisher).singleton(),
     server: asClass(ServerApplication).singleton(),
   });
 

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "payment.failed.v1",
+  "type": "object",
+  "required": [
+    "eventId",
+    "eventType",
+    "eventVersion",
+    "source",
+    "correlationId",
+    "occurredAt",
+    "aggregateType",
+    "aggregateId",
+    "payload"
+  ],
+  "properties": {
+    "eventId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "eventType": {
+      "const": "payment.failed.v1"
+    },
+    "eventVersion": {
+      "const": 1
+    },
+    "source": {
+      "const": "payment-service"
+    },
+    "correlationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[!-~]+$"
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "aggregateType": {
+      "const": "payment"
+    },
+    "aggregateId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object",
+      "required": [
+        "paymentId",
+        "merchantId",
+        "amountMinor",
+        "currency",
+        "provider",
+        "providerPaymentId",
+        "operation",
+        "status",
+        "failureCode",
+        "failureMessage",
+        "failedAt"
+      ],
+      "properties": {
+        "paymentId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "merchantId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "amountMinor": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000000000
+        },
+        "currency": {
+          "type": "string",
+          "enum": ["TRY", "USD", "EUR"]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "providerPaymentId": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["AUTHORIZE", "CAPTURE"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["FAILED", "CAPTURE_FAILED"]
+        },
+        "failureCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failureMessage": {
+          "type": "string",
+          "minLength": 1
+        },
+        "failedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "AUTHORIZE"
+              }
+            },
+            "required": ["operation"]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "FAILED"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "operation": {
+                "const": "CAPTURE"
+              }
+            },
+            "required": ["operation"]
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "CAPTURE_FAILED"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

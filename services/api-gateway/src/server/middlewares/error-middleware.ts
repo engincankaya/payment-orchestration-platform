@@ -3,10 +3,11 @@ import { ErrorRequestHandler } from 'express';
 import { CORRELATION_ID_HEADER } from '../../constants';
 import ApiError from '../../types/errors/api-error';
 import { Logger } from '../../utils/logger';
+import { getValidCorrelationId } from '../validations/common-validations';
 
 export default function errorMiddleware(deps: { logger: Logger }): ErrorRequestHandler {
   return (error, req, res, _next) => {
-    const correlationId = req.headers[CORRELATION_ID_HEADER] ?? null;
+    const correlationId = getValidCorrelationId(req.headers[CORRELATION_ID_HEADER]);
     const isApiError = error instanceof ApiError;
     const statusCode = isApiError ? error.statusCode : 500;
     const code = isApiError ? error.code : 'INTERNAL_SERVER_ERROR';

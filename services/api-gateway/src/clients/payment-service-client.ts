@@ -16,6 +16,12 @@ export interface GetPaymentClientQuery {
   paymentId: string;
 }
 
+export interface CapturePaymentClientCommand {
+  correlationId: string;
+  idempotencyKey: string;
+  paymentId: string;
+}
+
 export interface PaymentServiceResponse<T = unknown> {
   statusCode: number;
   body: T;
@@ -63,6 +69,20 @@ export default class PaymentServiceClient {
     });
 
     return result.body;
+  };
+
+  /** Captures a payment through the internal service without automatic retries. */
+  public capture = async (
+    command: CapturePaymentClientCommand,
+  ): Promise<PaymentServiceResponse> => {
+    return this.request(
+      `${BASE_INTERNAL_API_PATH}/payments/${command.paymentId}/capture`,
+      {
+        method: 'POST',
+        correlationId: command.correlationId,
+        idempotencyKey: command.idempotencyKey,
+      },
+    );
   };
 
   private request = async (

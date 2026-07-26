@@ -1,7 +1,8 @@
 import { randomUUID } from 'crypto';
-import { Knex } from 'knex';
+import type { Knex } from 'knex';
 
 import BaseDataAccess from '../base-data-access';
+import type { TransactionContext } from '../transaction-manager';
 
 export const IdempotencyStatus = {
   PROCESSING: 'PROCESSING',
@@ -26,6 +27,7 @@ export interface IdempotencyRecord {
   updated_at: Date | string;
   expires_at?: Date | string | null;
   processing_expires_at?: Date | string | null;
+  processing_token: string;
 }
 
 export interface TryInsertProcessingInput {
@@ -37,6 +39,7 @@ export interface TryInsertProcessingInput {
     id: string;
   };
   processingExpiresAt: Date;
+  processingToken: string;
 }
 
 export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRecord> {
@@ -47,16 +50,17 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
   public findByScopeAndKey = async (
     scope: string,
     idempotencyKey: string,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     return this.query(trx)
       .where({ scope, idempotency_key: idempotencyKey })
       .first();
   };
 
+  /** Inserts a processing record when the idempotency key is unclaimed. */
   public tryInsertProcessing = async (
     input: TryInsertProcessingInput,
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .insert({
@@ -69,6 +73,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
         resource_type: input.resource.type,
         resource_id: input.resource.id,
         processing_expires_at: input.processingExpiresAt,
+        processing_token: input.processingToken,
       })
       .onConflict(['scope', 'idempotency_key'])
       .ignore()
@@ -77,11 +82,13 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Reactivates a failed record with a new processing lease and token. */
   public reactivateFailed = async (
     id: string,
     requestHash: string,
     processingExpiresAt: Date,
-    trx?: Knex.Transaction,
+    processingToken: string,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({
@@ -92,6 +99,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       .update({
         status: IdempotencyStatus.PROCESSING,
         processing_expires_at: processingExpiresAt,
+        processing_token: processingToken,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');
@@ -99,11 +107,13 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Takes ownership of an expired processing record with a new token. */
   public takeoverExpiredProcessing = async (
     id: string,
     requestHash: string,
     processingExpiresAt: Date,
-    trx?: Knex.Transaction,
+    processingToken: string,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
       .where({
@@ -114,6 +124,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       .where('processing_expires_at', '<', this.knex.fn.now())
       .update({
         processing_expires_at: processingExpiresAt,
+        processing_token: processingToken,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');
@@ -121,6 +132,7 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
+  /** Completes a processing record only when its ownership token matches. */
   public markCompleted = async (
     input: {
       id: string;
@@ -129,11 +141,16 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
       resourceType: string;
       resourceId: string;
       expiresAt: Date;
+      processingToken: string;
     },
-    trx?: Knex.Transaction,
+    trx?: TransactionContext,
   ) => {
     const [record] = await this.query(trx)
-      .where({ id: input.id })
+      .where({
+        id: input.id,
+        status: IdempotencyStatus.PROCESSING,
+        processing_token: input.processingToken,
+      })
       .update({
         status: IdempotencyStatus.COMPLETED,
         response_status_code: input.responseStatusCode,
@@ -148,12 +165,24 @@ export default class IdempotencyDataAccess extends BaseDataAccess<IdempotencyRec
     return record ?? null;
   };
 
-  public markFailed = async (id: string, expiresAt: Date, trx?: Knex.Transaction) => {
+  /** Fails a processing record only when its ownership token matches. */
+  public markFailed = async (
+    input: {
+      id: string;
+      expiresAt: Date;
+      processingToken: string;
+    },
+    trx?: TransactionContext,
+  ) => {
     const [record] = await this.query(trx)
-      .where({ id })
+      .where({
+        id: input.id,
+        status: IdempotencyStatus.PROCESSING,
+        processing_token: input.processingToken,
+      })
       .update({
         status: IdempotencyStatus.FAILED,
-        expires_at: expiresAt,
+        expires_at: input.expiresAt,
         updated_at: this.knex.fn.now(),
       })
       .returning('*');

@@ -1,9 +1,29 @@
 import container from './bootstrap/container';
-import ServerApplication from './server/server';
+import type PaymentServiceBootstrap from './bootstrap/payment-service-bootstrap';
 
-const port = Number(process.env.PORT ?? 8080);
-const server = container.resolve<ServerApplication>('server');
+async function main() {
+  const bootstrap = container.resolve<PaymentServiceBootstrap>(
+    'paymentServiceBootstrap',
+  );
 
-server.app.listen(port, () => {
-  console.log(`payment-service listening on port ${port}`);
-});
+  process.once('SIGTERM', () => {
+    void bootstrap.handleSignal('SIGTERM').catch(handleFatalError);
+  });
+  process.once('SIGINT', () => {
+    void bootstrap.handleSignal('SIGINT').catch(handleFatalError);
+  });
+
+  try {
+    await bootstrap.bootstrap();
+  } catch (error) {
+    await bootstrap.shutdown().catch(() => undefined);
+    throw error;
+  }
+}
+
+function handleFatalError(error: unknown) {
+  console.error('payment-service fatal error', error);
+  process.exitCode = 1;
+}
+
+void main().catch(handleFatalError);

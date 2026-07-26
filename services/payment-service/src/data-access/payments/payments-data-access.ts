@@ -1,11 +1,12 @@
-import { Knex } from 'knex';
+import type { Knex } from 'knex';
 
 import BaseDataAccess from '../base-data-access';
+import type { TransactionContext } from '../transaction-manager';
 
 export interface PaymentRecord {
   id: string;
   merchant_id: string;
-  amount_minor: number;
+  amount_minor: string;
   currency: string;
   status: string;
   provider: string;
@@ -22,7 +23,7 @@ export interface PaymentRecord {
 export interface InsertPaymentRecord {
   id: string;
   merchant_id: string;
-  amount_minor: number;
+  amount_minor: string;
   currency: string;
   status: string;
   provider: string;
@@ -33,21 +34,53 @@ export interface InsertPaymentRecord {
   failed_at?: Date | null;
 }
 
+export interface UpdateAuthorizedPaymentStatusInput {
+  id: string;
+  status: string;
+  captured_at: Date | null;
+  failed_at: Date | null;
+  failure_code: string | null;
+  failure_message: string | null;
+}
+
 export default class PaymentsDataAccess extends BaseDataAccess<PaymentRecord> {
   constructor(deps: { knex: Knex }) {
     super(deps, 'payments');
   }
 
-  public insert = async (record: InsertPaymentRecord, trx?: Knex.Transaction) => {
+  public insert = async (record: InsertPaymentRecord, trx?: TransactionContext) => {
     const [payment] = await this.query(trx).insert(record).returning('*');
     return payment;
   };
 
-  public findById = async (id: string, trx?: Knex.Transaction) => {
+  public findById = async (id: string, trx?: TransactionContext) => {
     return this.query(trx).where({ id }).first();
   };
 
-  public withTransaction = async <T>(handler: (trx: Knex.Transaction) => Promise<T>) => {
-    return this.knex.transaction(handler);
+  /** Reads and locks a payment row within the provided transaction. */
+  public findByIdForUpdate = async (id: string, trx: TransactionContext) => {
+    return this.query(trx).where({ id }).forUpdate().first();
+  };
+
+  /** Updates a payment only while its current status is AUTHORIZED. */
+  public updateStatusIfAuthorized = async (
+    input: UpdateAuthorizedPaymentStatusInput,
+    trx: TransactionContext,
+  ) => {
+    const [payment] = await this.query(trx)
+      .where({
+        id: input.id,
+        status: 'AUTHORIZED',
+      })
+      .update({
+        status: input.status,
+        captured_at: input.captured_at,
+        failed_at: input.failed_at,
+        failure_code: input.failure_code,
+        failure_message: input.failure_message,
+      })
+      .returning('*');
+
+    return payment ?? null;
   };
 }

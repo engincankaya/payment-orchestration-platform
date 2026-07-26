@@ -1,3 +1,4 @@
+import type { TransactionContext } from '../../src/data-access/transaction-manager';
 import IdempotencyService, {
   IdempotencyDataAccessPort,
 } from '../../src/services/idempotency/idempotency-service';
@@ -18,6 +19,7 @@ const makeService = (idempotencyDataAccess = makeDataAccessMock()) =>
   new IdempotencyService({ idempotencyDataAccess });
 
 const paymentResource = { type: 'payment', id: 'payment-1' };
+const UUID_PATTERN = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 describe('IdempotencyService', () => {
   it('buildRequestHash returns the same hash for the same body with different key order', () => {
@@ -55,32 +57,44 @@ describe('IdempotencyService', () => {
   });
 
   it('starts a new idempotency record when scope and key are unseen', async () => {
-    const tryInsertProcessing = jest.fn().mockResolvedValue({
-      id: 'idem-1',
-      resource_id: 'payment-1',
-      status: 'PROCESSING',
-    });
+    const tryInsertProcessing = jest.fn().mockImplementation(
+      async (input: { processingToken: string }) => ({
+        id: 'idem-1',
+        resource_id: 'payment-1',
+        processing_token: input.processingToken,
+        status: 'PROCESSING',
+      }),
+    );
     const service = makeService(makeDataAccessMock({
       findByScopeAndKey: jest.fn().mockResolvedValue(null),
       tryInsertProcessing,
     }));
 
-    await expect(
-      service.getExistingOrStart({
-        scope: 'payments:create:merchant-1',
-        idempotencyKey: 'idem-key-1',
-        requestHash: 'hash-1',
-        resource: { type: 'payment', id: 'payment-1' },
-      }),
-    ).resolves.toEqual({ type: 'STARTED', recordId: 'idem-1', resourceId: 'payment-1' });
-
-    expect(tryInsertProcessing).toHaveBeenCalledWith({
+    const decision = await service.getExistingOrStart({
       scope: 'payments:create:merchant-1',
       idempotencyKey: 'idem-key-1',
       requestHash: 'hash-1',
       resource: { type: 'payment', id: 'payment-1' },
-      processingExpiresAt: expect.any(Date),
     });
+    const insertedProcessingToken = tryInsertProcessing.mock.calls[0][0].processingToken;
+
+    expect(insertedProcessingToken).toMatch(UUID_PATTERN);
+    expect(decision).toEqual({
+      type: 'STARTED',
+      recordId: 'idem-1',
+      resourceId: 'payment-1',
+      processingToken: insertedProcessingToken,
+    });
+    expect(tryInsertProcessing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'payments:create:merchant-1',
+        idempotencyKey: 'idem-key-1',
+        requestHash: 'hash-1',
+        resource: { type: 'payment', id: 'payment-1' },
+        processingExpiresAt: expect.any(Date),
+        processingToken: expect.stringMatching(UUID_PATTERN),
+      }),
+    );
   });
 
   it('returns cached response for same scope, key, and request hash', async () => {
@@ -165,33 +179,55 @@ describe('IdempotencyService', () => {
   });
 
   it('reactivates a failed idempotency record only when the request hash matches', async () => {
-    const reactivateFailed = jest.fn().mockResolvedValue({
-      id: 'idem-1',
-      request_hash: 'hash-1',
-      resource_id: 'payment-1',
-      status: 'PROCESSING',
-    });
+    const previousToken = '11111111-1111-4111-8111-111111111111';
+    const reactivateFailed = jest.fn().mockImplementation(
+      async (
+        _id: string,
+        _requestHash: string,
+        _processingExpiresAt: Date,
+        nextToken: string,
+      ) => ({
+        id: 'idem-1',
+        request_hash: 'hash-1',
+        resource_id: 'payment-1',
+        processing_token: nextToken,
+        status: 'PROCESSING',
+      }),
+    );
     const service = makeService(makeDataAccessMock({
       findByScopeAndKey: jest.fn().mockResolvedValue({
         id: 'idem-1',
         request_hash: 'hash-1',
         resource_id: 'payment-1',
+        processing_token: previousToken,
         status: 'FAILED',
       }),
       tryInsertProcessing: jest.fn(),
       reactivateFailed,
     }));
 
-    await expect(
-      service.getExistingOrStart({
-        scope: 'payments:create:merchant-1',
-        idempotencyKey: 'idem-key-1',
-        requestHash: 'hash-1',
-        resource: { type: 'payment', id: 'new-payment-id-should-not-be-used' },
-      }),
-    ).resolves.toEqual({ type: 'STARTED', recordId: 'idem-1', resourceId: 'payment-1' });
+    const decision = await service.getExistingOrStart({
+      scope: 'payments:create:merchant-1',
+      idempotencyKey: 'idem-key-1',
+      requestHash: 'hash-1',
+      resource: { type: 'payment', id: 'new-payment-id-should-not-be-used' },
+    });
+    const reactivatedProcessingToken = reactivateFailed.mock.calls[0][3];
 
-    expect(reactivateFailed).toHaveBeenCalledWith('idem-1', 'hash-1', expect.any(Date));
+    expect(reactivatedProcessingToken).toMatch(UUID_PATTERN);
+    expect(reactivatedProcessingToken).not.toBe(previousToken);
+    expect(decision).toEqual({
+      type: 'STARTED',
+      recordId: 'idem-1',
+      resourceId: 'payment-1',
+      processingToken: reactivatedProcessingToken,
+    });
+    expect(reactivateFailed).toHaveBeenCalledWith(
+      'idem-1',
+      'hash-1',
+      expect.any(Date),
+      expect.stringMatching(UUID_PATTERN),
+    );
   });
 
   it('fails closed when a reactivated record has no reserved resource id', async () => {
@@ -250,17 +286,27 @@ describe('IdempotencyService', () => {
   });
 
   it('takes over an expired processing record with the same hash and preserves the resource id', async () => {
-    const takeoverExpiredProcessing = jest.fn().mockResolvedValue({
-      id: 'idem-1',
-      request_hash: 'hash-1',
-      resource_id: 'payment-1',
-      status: 'PROCESSING',
-    });
+    const previousToken = '11111111-1111-4111-8111-111111111111';
+    const takeoverExpiredProcessing = jest.fn().mockImplementation(
+      async (
+        _id: string,
+        _requestHash: string,
+        _processingExpiresAt: Date,
+        nextToken: string,
+      ) => ({
+        id: 'idem-1',
+        request_hash: 'hash-1',
+        resource_id: 'payment-1',
+        processing_token: nextToken,
+        status: 'PROCESSING',
+      }),
+    );
     const service = makeService(makeDataAccessMock({
       findByScopeAndKey: jest.fn().mockResolvedValue({
         id: 'idem-1',
         request_hash: 'hash-1',
         resource_id: 'payment-1',
+        processing_token: previousToken,
         status: 'PROCESSING',
         processing_expires_at: new Date(Date.now() - 1000).toISOString(),
       }),
@@ -268,16 +314,28 @@ describe('IdempotencyService', () => {
       takeoverExpiredProcessing,
     }));
 
-    await expect(
-      service.getExistingOrStart({
-        scope: 'payments:create:merchant-1',
-        idempotencyKey: 'idem-key-1',
-        requestHash: 'hash-1',
-        resource: { type: 'payment', id: 'new-payment-id-should-not-be-used' },
-      }),
-    ).resolves.toEqual({ type: 'STARTED', recordId: 'idem-1', resourceId: 'payment-1' });
+    const decision = await service.getExistingOrStart({
+      scope: 'payments:create:merchant-1',
+      idempotencyKey: 'idem-key-1',
+      requestHash: 'hash-1',
+      resource: { type: 'payment', id: 'new-payment-id-should-not-be-used' },
+    });
+    const takeoverProcessingToken = takeoverExpiredProcessing.mock.calls[0][3];
 
-    expect(takeoverExpiredProcessing).toHaveBeenCalledWith('idem-1', 'hash-1', expect.any(Date));
+    expect(takeoverProcessingToken).toMatch(UUID_PATTERN);
+    expect(takeoverProcessingToken).not.toBe(previousToken);
+    expect(decision).toEqual({
+      type: 'STARTED',
+      recordId: 'idem-1',
+      resourceId: 'payment-1',
+      processingToken: takeoverProcessingToken,
+    });
+    expect(takeoverExpiredProcessing).toHaveBeenCalledWith(
+      'idem-1',
+      'hash-1',
+      expect.any(Date),
+      expect.stringMatching(UUID_PATTERN),
+    );
   });
 
   it('rejects an expired processing record when the request hash is different', async () => {
@@ -380,6 +438,98 @@ describe('IdempotencyService', () => {
     ).rejects.toMatchObject({
       statusCode: 500,
       code: 'IDEMPOTENCY_STATE_NOT_FOUND',
+    });
+  });
+
+  it('passes the ownership token to the conditional COMPLETED write', async () => {
+    const markCompleted = jest.fn().mockResolvedValue({
+      id: 'idem-1',
+      status: 'COMPLETED',
+    });
+    const service = makeService(makeDataAccessMock({ markCompleted }));
+    const trx = { id: 'trx-1' } as unknown as TransactionContext;
+
+    await service.markCompleted({
+      idempotencyRecordId: 'idem-1',
+      processingToken: '11111111-1111-4111-8111-111111111111',
+      responseStatusCode: 200,
+      responseBody: { id: 'payment-1', status: 'CAPTURED' },
+      resourceType: 'payment',
+      resourceId: 'payment-1',
+      trx,
+    });
+
+    expect(markCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'idem-1',
+        processingToken: '11111111-1111-4111-8111-111111111111',
+        responseStatusCode: 200,
+        responseBody: { id: 'payment-1', status: 'CAPTURED' },
+        resourceType: 'payment',
+        resourceId: 'payment-1',
+        expiresAt: expect.any(Date),
+      }),
+      trx,
+    );
+  });
+
+  it('passes the ownership token to the conditional FAILED write', async () => {
+    const markFailed = jest.fn().mockResolvedValue({
+      id: 'idem-1',
+      status: 'FAILED',
+    });
+    const service = makeService(makeDataAccessMock({ markFailed }));
+    const trx = { id: 'trx-1' } as unknown as TransactionContext;
+
+    await service.markFailed({
+      idempotencyRecordId: 'idem-1',
+      processingToken: '11111111-1111-4111-8111-111111111111',
+      trx,
+    });
+
+    expect(markFailed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'idem-1',
+        processingToken: '11111111-1111-4111-8111-111111111111',
+        expiresAt: expect.any(Date),
+      }),
+      trx,
+    );
+  });
+
+  it('throws IDEMPOTENCY_OWNERSHIP_LOST when a stale token completes zero rows', async () => {
+    const service = makeService(makeDataAccessMock({
+      markCompleted: jest.fn().mockResolvedValue(null),
+    }));
+
+    await expect(
+      service.markCompleted({
+        idempotencyRecordId: 'idem-1',
+        processingToken: 'stale-token',
+        responseStatusCode: 200,
+        responseBody: { id: 'payment-1', status: 'CAPTURED' },
+        resourceType: 'payment',
+        resourceId: 'payment-1',
+      }),
+    ).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_OWNERSHIP_LOST',
+      statusCode: 409,
+    });
+  });
+
+  it('throws IDEMPOTENCY_OWNERSHIP_LOST when a stale token fails zero rows', async () => {
+    const service = makeService(makeDataAccessMock({
+      markFailed: jest.fn().mockResolvedValue(null),
+    }));
+
+    await expect(
+      service.markFailed({
+        idempotencyRecordId: 'idem-1',
+        processingToken: 'stale-token',
+      }),
+    ).rejects.toMatchObject({
+      code: 'IDEMPOTENCY_OWNERSHIP_LOST',
+      statusCode: 409,
     });
   });
 
